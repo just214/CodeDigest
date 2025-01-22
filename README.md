@@ -70,7 +70,7 @@ This file can be fed directly to your LLM. For example, if you have an API or lo
 node codedigest.mjs --help
 ```
 ```
-Usage: node CodeDigest.js [options]
+Usage: node codedigest.mjs  [options]
 
 Options:
   --path <path>, -p <path>             Directory to process (default: current directory)
@@ -90,19 +90,19 @@ Options:
 
 Examples:
   # Basic usage with default options
-  node CodeDigest.js
+  node codedigest.mjs 
 
   # Specify a directory and output file
-  node CodeDigest.js --path ./myproject --output mydigest.txt
+  node codedigest.mjs  --path ./myproject --output mydigest.txt
 
   # Use ignore patterns from a file and add additional ignore patterns via command line
-  node CodeDigest.js --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
+  node codedigest.mjs  --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
 
   # Use include patterns to only include specific file types
-  node CodeDigest.js --include '*.js' --include '*.md'
+  node codedigest.mjs  --include '*.js' --include '*.md'
 
   # Combine include and ignore patterns
-  node CodeDigest.js -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
+  node codedigest.mjs  -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
 ```
 
 ### Options
