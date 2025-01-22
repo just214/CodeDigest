@@ -15,7 +15,7 @@ const MAX_TOTAL_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 const CHUNK_SIZE           = 1024 * 1024;       // 1 MB
 
 /**
- * Default patterns to ignore.
+ * Default patterns to ignore (exclude).
  *
  * @type {Set<string>}
  */
@@ -76,7 +76,7 @@ const FORMAT = {
  * @property {Set<string>} seenSymlinks - A set of "entry:target" symlink pairs to detect circular symlinks.
  * @property {Array<{timestamp: string, message: string, stack?: string}>} errors - An array of error objects.
  * @property {number} skippedFiles - The number of files skipped due to exceeding maxFileSize.
- * @property {number} excludedFiles - The number of files excluded by pattern.
+ * @property {number} filteredFiles - The number of files filtered out by include/exclude patterns.
  * @property {number} nonTextFiles - The number of files excluded because they are not text files.
  * @property {boolean} sizeLimitReached - Indicates if the total size limit was reached.
  * @property {number} startTime - Timestamp of the start of processing.
@@ -86,7 +86,7 @@ const FORMAT = {
 
 /**
  * @typedef {Object} ProcessingOptions
- * @property {string[]} ignorePatterns - Patterns of files and directories to ignore.
+ * @property {string[]} ignorePatterns - Patterns of files and directories to ignore (exclude).
  * @property {string[]} includePatterns - Patterns of files and directories to include.
  * @property {number} maxFileSize - Maximum file size to process.
  * @property {number} maxTotalSize - Maximum total size of files to process.
@@ -108,7 +108,7 @@ const createStats = () => ({
   seenSymlinks:          new Set(),
   errors:                [],
   skippedFiles:          0,
-  excludedFiles:         0,
+  filteredFiles:         0,
   nonTextFiles:          0,
   sizeLimitReached:      false,
   startTime:             Date.now(),
@@ -197,18 +197,18 @@ function miniMatch(path, pattern, opts = {}) {
 }
 
 /**
- * Checks if a path should be ignored based on the given ignore patterns, with "last pattern wins".
+ * Checks if a path should be excluded based on the given ignore patterns, with "last pattern wins".
  *
  * @param {string} path - The path to check (normalized with forward slashes).
- * @param {string[]} ignorePatterns - The patterns to ignore.
+ * @param {string[]} ignorePatterns - The patterns to ignore (exclude).
  * @param {Object} minimatchOptions - Options for matching.
  * @param {ProcessingStats} [stats] - For tracking matched patterns.
- * @returns {boolean} True if the path should be ignored, false otherwise.
+ * @returns {boolean} True if the path should be excluded, false otherwise.
  */
-const shouldIgnore = (path, ignorePatterns, minimatchOptions, stats) => {
+const shouldExclude = (path, ignorePatterns, minimatchOptions, stats) => {
   const normalizedPath = normalize(path).split(sep).join('/');
 
-  let shouldBeIgnored = false;
+  let shouldBeExcluded = false;
 
   for (const pattern of ignorePatterns) {
     const isNegated     = pattern.startsWith('!');
@@ -220,8 +220,8 @@ const shouldIgnore = (path, ignorePatterns, minimatchOptions, stats) => {
     });
 
     if (match) {
-      shouldBeIgnored = !isNegated;
-      // Track which pattern caused ignoring
+      shouldBeExcluded = !isNegated;
+      // Track which pattern caused exclusion
       if (!isNegated && stats) {
         stats.matchedIgnorePatterns.add(pattern);
       }
@@ -229,7 +229,7 @@ const shouldIgnore = (path, ignorePatterns, minimatchOptions, stats) => {
     }
   }
 
-  return shouldBeIgnored;
+  return shouldBeExcluded;
 };
 
 /**
@@ -442,7 +442,11 @@ const processFile = (filePath, maxFileSize, stats, files, rootPath, options) => 
 };
 
 /**
- * Processes a directory recursively, applying ignore/include rules
+ * Processes a directory recursively, applying include/exclude rules.
+ *
+ * Logic:
+ * 1. Include Check: Only process files/directories that match at least one include pattern (if include patterns are provided).
+ * 2. Exclude Check: From the included items, exclude those that match any ignore pattern.
  *
  * @param {string} dirPath - The path to the directory.
  * @param {ProcessingOptions} options - The processing options.
@@ -495,26 +499,28 @@ const processDirectory = (
       const relativeEntryPath = relative(rootPath, entryPath);
       const normalizedPath    = normalize(relativeEntryPath).split(sep).join('/');
 
-      // --- 1. Ignore check ---
+
+      // --- 1. Include check ---
+      if (!isIncludedByPatterns(normalizedPath, includePatterns, stats)) {
+        stats.filteredFiles++;
+        continue;
+      }
+
+      // --- 2. Exclude check ---
       if (
-        shouldIgnore(
+        shouldExclude(
           normalizedPath,
           ignorePatterns,
           { nocase: true, dot: true },
           stats
         )
       ) {
-        stats.excludedFiles++;
+        stats.filteredFiles++;
         continue;
       }
 
-      // --- 2. Include check ---
-      if (!isIncludedByPatterns(normalizedPath, includePatterns, stats)) {
-        stats.excludedFiles++;
-        continue;
-      }
 
-      // If we get here, it's not ignored and it matches the includes
+      // If we get here, it's included and not excluded
       if (entry.isSymbolicLink()) {
         try {
           const targetPath = resolve(dirname(entryPath), readlinkSync(entryPath));
@@ -574,7 +580,7 @@ const processDirectory = (
  * Generates a tree-like directory structure string.
  *
  * @param {string} dirPath - The path to the directory.
- * @param {string[]} ignorePatterns - The patterns to ignore.
+ * @param {string[]} ignorePatterns - The patterns to ignore (exclude).
  * @param {string[]} includePatterns - The patterns to include.
  * @param {number} maxDepth - Maximum recursion depth for the tree.
  * @param {number} [currentDepth=0] - Current depth.
@@ -608,7 +614,7 @@ const generateDirectoryTree = (
       const relPath = relative(rootPath, join(dirPath, entry.name));
       const norm    = normalize(relPath).split(sep).join('/');
       // Exclude if it's ignored
-      if (shouldIgnore(norm, ignorePatterns, { nocase: true, dot: true })) {
+      if (shouldExclude(norm, ignorePatterns, { nocase: true, dot: true })) {
         return false;
       }
       // Exclude if it fails includes
@@ -728,10 +734,10 @@ const generateSummary = (path, stats, options, outputFile) => {
 
   return `
 ${invert(bold(' Digest Summary '))}
-${white('Processed directory:')}         ${gray(path)}
+${white('Processed directory:')}         ${gray(resolve(path))}
 ${white('Execution time:')}              ${yellow((executionTime / 1000).toFixed(2))} ${gray('seconds')}
 ${white('Files added to digest:')}       ${green(stats.fileCount)}
-${white('Files excluded by pattern:')}   ${red(stats.excludedFiles)}
+${white('Files excluded by pattern:')}   ${red(stats.filteredFiles)}
 ${white('Files excluded (non-text):')}   ${red(stats.nonTextFiles)}
 ${white('Files skipped (size limit):')}  ${red(stats.skippedFiles)}
 ${white('Total size:')}                  ${yellow(formatBytes(stats.totalSize))}
@@ -741,7 +747,6 @@ ${invert(bold(' Configuration '))}
 ${white('Max file size:')}       ${yellow(formatBytes(maxFileSize))}
 ${white('Max total size:')}      ${yellow(formatBytes(maxTotalSize))}
 ${white('Max directory depth:')} ${yellow(maxDepth)}
-${white('Omit excluded from tree:')} ${green('Yes')}
 ${bold('Ignore patterns that matched:')} ${
     stats.matchedIgnorePatterns.size > 0
       ? `\n  ${gray(Array.from(stats.matchedIgnorePatterns).join('\n  '))}`
@@ -808,7 +813,7 @@ const parseArgs = () => {
       case '--ultra-quiet':       parsedArgs.ultraQuiet       = true; break;
       case '--skip-default-ignore': parsedArgs.skipDefaultIgnore = true; break;
       case '--help':              printHelp(); process.exit(0); break;
-      
+
       // Short options
       case '-p':  parsedArgs.path             = args[++i]; break;
       case '-o':  parsedArgs.outputFile       = args[++i]; break;
@@ -868,7 +873,7 @@ Examples:
   # Use include patterns to only include specific file types
   node codedigest.mjs --include '*.js' --include '*.md'
 
-  # Combine include and ignore patterns
+  # Combine include and ignore patterns (Include first, then Exclude)
   node codedigest.mjs -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
 
   # Skip default ignore patterns and use only user-provided patterns
@@ -948,7 +953,7 @@ const main = async () => {
       return `${separator}File: ${file.path}\n${separator}${file.content}\n`;
     }).join('');
 
-    // Build directory tree (always omitting excluded)
+    // Build directory tree (always omitting filtered items)
     const directoryTree = generateDirectoryTree(
       args.path,
       ignorePatterns,
