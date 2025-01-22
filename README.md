@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://raw.githubusercontent.com/Nowayz/CodeDigest/refs/heads/resources/codedigest_logo.png" alt="logo"/>
 </p>
-CodeDigest is a single-file Node.js command-line tool that consolidates an entire code repository (directory structure and text-based files) into a digest file for easy consumption by your preferred LLM (Large Language Model). It helps you quickly gather all source code in one place so you can feed it into LLM-based tools for analysis, code generation, or any other AI-driven development workflows.
+**CodeDigest** is a single-file Node.js command-line tool that consolidates an entire code repository (directory structure and text-based files) into a digest file for easy consumption by your preferred LLM (Large Language Model). It helps you quickly gather all source code in one place so you can feed it into LLM-based tools for analysis, code generation, or any other AI-driven development workflows.
 
 ## Table of Contents
 
@@ -22,7 +22,7 @@ node ./codedigest.mjs --path ./myproject --output consolidated.txt
 
 Once run, **`consolidated.txt`** will include:
 
-1. A **directory tree** of `myproject`.
+1. A **directory tree** of `myproject` (excluding specified patterns).
 2. **All text-based file contents** (subject to size limits).
 3. A **summary** (stats, ignore patterns, errors, etc.).
 
@@ -58,7 +58,7 @@ etc...
 This file can be fed directly to your LLM. For example, if you have an API or local setup where you can provide a text context to a language model, just drop the contents of `consolidated.txt` into the prompt or your specialized ingestion pipeline.
 
 ### Installation
-1. Download `codedigest.mjs` and stick it somewhere in your `PATH`
+1. Download `codedigest.mjs` and place it somewhere in your `PATH`.
 2. Ensure you have [Node.js](https://nodejs.org) installed.
 3. Run the script:
    ```bash
@@ -70,7 +70,7 @@ This file can be fed directly to your LLM. For example, if you have an API or lo
 node codedigest.mjs --help
 ```
 ```
-Usage: node codedigest.mjs  [options]
+Usage: node codedigest.mjs [options]
 
 Options:
   --path <path>, -p <path>             Directory to process (default: current directory)
@@ -84,6 +84,7 @@ Options:
   --max-size <bytes>, -s <bytes>       Maximum file size (default: 10 MB)
   --max-total-size <bytes>, -t <bytes> Maximum total size (default: 500 MB)
   --max-depth <number>, -d <number>    Maximum directory depth (default: 20)
+  --omit-excluded                      Omit excluded files from the directory tree
   --quiet, -q                          Suppress 'Added' and 'Skipped' messages
   --ultra-quiet, -uq                   Suppress all non-error output
   --help, -h                           Display this help message
@@ -93,34 +94,38 @@ Examples:
   node codedigest.mjs 
 
   # Specify a directory and output file
-  node codedigest.mjs  --path ./myproject --output mydigest.txt
+  node codedigest.mjs --path ./myproject --output mydigest.txt
 
   # Use ignore patterns from a file and add additional ignore patterns via command line
-  node codedigest.mjs  --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
+  node codedigest.mjs --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
 
   # Use include patterns to only include specific file types
-  node codedigest.mjs  --include '*.js' --include '*.md'
+  node codedigest.mjs --include '*.js' --include '*.md'
 
   # Combine include and ignore patterns
-  node codedigest.mjs  -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
+  node codedigest.mjs -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
+
+  # Omit excluded files from the directory tree
+  node codedigest.mjs --omit-excluded
 ```
 
 ### Options
 
 | Option                        | Alias | Description                                                | Default                 |
 |-------------------------------|-------|------------------------------------------------------------|-------------------------|
-| `--path <path>`              | `-p`  | Directory to process.                                     | `.` (current directory) |
-| `--output <file>`            | `-o`  | Output file path.                                          | `digest.txt`           |
-| `--ignore <file>`            | `-g`  | File containing ignore patterns.                           | —                       |
-| `--include <file>`           | `-n`  | File containing include patterns.                          | —                      |
-| `--ignore-pattern <pattern>` | `-i`  | Add an ignore pattern (can be used multiple times).        | —                       |
-| `--include-pattern <pattern>`| `-I`  | Add an include pattern (can be used multiple times).       | —                       |
-| `--max-size <bytes>`         | `-s`  | Maximum individual file size (in bytes).                   | `10 MB`                |
-| `--max-total-size <bytes>`   | `-t`  | Maximum total size (in bytes) before digest stops adding.  | `500 MB`               |
-| `--max-depth <number>`       | `-d`  | Maximum directory depth.                                   | `20`                   |
-| `--quiet`                    | `-q`  | Suppress "Added" and "Skipped" messages.                   | `false`                |
-| `--ultra-quiet`              | `-uq` | Suppress all non-error output.                             | `false`                |
-| `--help`                     | `-h`  | Show help message.                                         | —                       |
+| `--path <path>`               | `-p`  | Directory to process.                                     | `.` (current directory) |
+| `--output <file>`             | `-o`  | Output file path.                                          | `digest.txt`           |
+| `--ignore <file>`             | `-g`  | File containing ignore patterns.                           | —                       |
+| `--include <file>`            | `-n`  | File containing include patterns.                          | —                      |
+| `--ignore-pattern <pattern>`  | `-i`  | Add an ignore pattern (can be used multiple times).        | —                       |
+| `--include-pattern <pattern>` | `-I`  | Add an include pattern (can be used multiple times).       | —                       |
+| `--max-size <bytes>`          | `-s`  | Maximum individual file size (in bytes).                   | `10 MB`                |
+| `--max-total-size <bytes>`    | `-t`  | Maximum total size (in bytes) before digest stops adding.  | `500 MB`               |
+| `--max-depth <number>`        | `-d`  | Maximum directory depth.                                   | `20`                   |
+| `--omit-excluded`             | —     | Omit excluded files from the directory tree to reduce clutter. | `false`            |
+| `--quiet`                     | `-q`  | Suppress "Added" and "Skipped" messages.                   | `false`                |
+| `--ultra-quiet`               | `-uq` | Suppress all non-error output.                             | `false`                |
+| `--help`                      | `-h`  | Show help message.                                         | —                       |
 
 ### Ignore & Include Patterns
 
@@ -305,8 +310,10 @@ For example:
    - Only reads **text-based** files (checked by extension and simple binary detection).  
    - Skips files larger than `--max-size`.  
    - Stops adding new files once `--max-total-size` is reached (but still traverses the structure).
-4. **Single File Output**  
-   - Generates a **directory tree** in text form.  
+4. **Omitting Excluded Files from Directory Tree**  
+   - When `--omit-excluded` is enabled, excluded files and directories are not displayed in the directory tree, reducing clutter especially in projects with large dependencies like `node_modules`.
+5. **Single File Output**  
+   - Generates a **directory tree** in text form (optionally omitting excluded files).  
    - Appends each included file's content to the digest.  
    - Summarizes stats (files processed, excluded, errors, etc.) at the end.
 
@@ -326,6 +333,8 @@ For example:
   - Otherwise checks for null characters.
 - **Large Directories**  
   - For big projects, be mindful of memory and time. Possibly add more ignore patterns or reduce `--max-depth`.
+- **Omitting Excluded Files**  
+  - Using `--omit-excluded` helps in keeping the directory tree clean by excluding files and directories that match ignore patterns. This is particularly useful for projects with large dependency directories like `node_modules` or extensive import structures, ensuring the directory tree remains readable and focused on relevant parts of the codebase.
 
 ### License
 
