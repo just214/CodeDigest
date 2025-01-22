@@ -129,7 +129,40 @@ Examples:
 
 ### Ignore & Include Patterns
 
-**CodeDigest** comes with a comprehensive set of default ignore patterns to exclude common files and directories that are typically unnecessary for analysis or could clutter the digest. Below is the **full list of default exclude patterns**:
+**CodeDigest** supports multiple ways to specify ignore patterns:
+
+1. **Built-in defaults** (comprehensive set of common excludes)
+2. **`.cdignore` file** in the target directory
+3. **Command-line options** (`--ignore-file` and `--ignore-pattern`)
+
+#### .cdignore File Format
+
+The `.cdignore` file supports both glob patterns and literal paths, with an optional templates section:
+
+```plaintext
+# Direct patterns and paths
+../some-file.txt          # Relative path
+**/some_glob_pattern**    # Glob pattern
+specific_file.txt         # Literal filename
+
+# Template section - include patterns from other files
+[templates]
+.gitignore               # Include all patterns from .gitignore
+.npmignore              # Include all patterns from .npmignore
+```
+
+**Features:**
+- **Literal Paths**: Simply list files or directories to ignore
+- **Glob Patterns**: Use standard glob syntax (*, **, ?, etc.)
+- **Relative Paths**: Support for paths relative to the .cdignore file
+- **Templates**: Include patterns from other ignore files (like .gitignore)
+- **Comments**: Lines starting with # are ignored
+
+The `.cdignore` file is automatically loaded if present in the target directory. Its patterns are combined with any other ignore patterns specified via command line options.
+
+#### Default Ignore Patterns
+
+CodeDigest comes with a comprehensive set of default ignore patterns:
 
 **Note:** Always ensure that the default ignore patterns align with your project's specific needs. You can customize them further using the provided command-line options to tailor the digest to your requirements.
 
@@ -278,16 +311,27 @@ vendor/
 
 **Customizing Ignore Patterns:**
 
-- **Via Command Line:**
-  - Add extra patterns using `--ignore-pattern` or `-i`. For example:
-    ```bash
-    node codedigest.mjs --ignore-pattern '*.log' --ignore-pattern 'temp/'
-    ```
-- **Via Ignore File:**
-  - Create a file (e.g., `.gitignore`) with your custom ignore patterns and specify it using `--ignore <file>` or `-g <file>`. For example:
-    ```bash
-    node codedigest.mjs --ignore .gitignore
-    ```
+1. **Via .cdignore file:**
+   ```bash
+   # Create .cdignore in your project
+   echo "*.log
+   temp/
+   [templates]
+   .gitignore" > .cdignore
+   
+   # Run codedigest
+   node codedigest.mjs
+   ```
+
+2. **Via Command Line:**
+   ```bash
+   node codedigest.mjs --ignore-pattern '*.log' --ignore-pattern 'temp/'
+   ```
+
+3. **Via Ignore File:**
+   ```bash
+   node codedigest.mjs --ignore custom-ignore-file.txt
+   ```
 
 ### Include Patterns
 - If **include** patterns are specified, **only** files matching those patterns are processed (unless ignored).
@@ -326,7 +370,7 @@ For example:
   - Default `--max-depth=20`.  
   - Prevents running forever on enormous or deeply nested repositories.
 - **Symlinks**  
-  - Symlinks are tracked so CodeDigest doesn’t loop infinitely on recursive links.
+  - Symlinks are tracked so CodeDigest doesn't loop infinitely on recursive links.
   - Broken symlinks generate warnings but do not stop the script.
 - **File Type Detection**  
   - A set of known text extensions is used (e.g., `.js`, `.py`, `.md`, etc.).  
