@@ -406,7 +406,7 @@ const processFile = (filePath, maxFileSize, stats, files, rootPath, options) => 
       return;
     }
 
-    if (stats.totalSize + fileSize > MAX_TOTAL_SIZE_BYTES) {
+    if (stats.totalSize + fileSize > options.maxTotalSize) {
       stats.sizeLimitReached = true;
       if (!options.quiet && !options.ultraQuiet) {
         console.warn(`${FORMAT.bold('Total size limit reached at:')} ${filePath}`);
