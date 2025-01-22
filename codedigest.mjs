@@ -22,7 +22,7 @@ const CHUNK_SIZE           = 1024 * 1024;       // 1 MB
 const DEFAULT_IGNORE_PATTERNS = new Set([
   '*.pyc',           '*.pyo',           '*.pyd',           '__pycache__',     '.pytest_cache',
   '.coverage',       '.tox',            '.nox',            '.mypy_cache',     '.ruff_cache',
-  '.hypothesis',     'poetry.lock',     'Pipfile.lock',    'node_modules',    'bower_components',
+  '.hypothesis',     'poetry.lock',     'Pipfile.lock',    '**/node_modules/**',    'bower_components',
   'package-lock.json','yarn.lock',      '.npm',            '.yarn',           '.pnpm-store',
   '*.class',         '*.jar',           '*.war',           '*.ear',           '*.nar',
   '.gradle/',        'build/',          '.settings/',      '.classpath',      'gradle-app.setting',
@@ -225,19 +225,32 @@ function miniMatch(path, pattern, opts = {}) {
  * @returns {boolean} True if the path should be ignored, false otherwise.
  */
 const shouldIgnore = (path, ignorePatterns, minimatchOptions, stats) => {
-  const normalizedPath = normalize(path);
+  const normalizedPath = normalize(path).split(sep).join('/');
+  
+  let shouldBeIgnored = false;
+  
   for (const pattern of ignorePatterns) {
-    const isNegated     = pattern.startsWith('!');
+    const isNegated = pattern.startsWith('!');
     const actualPattern = isNegated ? pattern.slice(1) : pattern;
-    const match         = miniMatch(normalizedPath, actualPattern, minimatchOptions);
+    
+    const match = miniMatch(normalizedPath, actualPattern, {
+      ...minimatchOptions,
+      matchBase: !actualPattern.includes('/'), // Enable matchBase for patterns without path separators
+    });
+    
     if (match) {
-      if (!isNegated && stats) {
-        stats.matchedIgnorePatterns.add(pattern);
+      if (!isNegated) {
+        shouldBeIgnored = true;
+        if (stats) {
+          stats.matchedIgnorePatterns.add(pattern);
+        }
+      } else {
+        shouldBeIgnored = false;
       }
-      return !isNegated ? true : false;
     }
   }
-  return false;
+  
+  return shouldBeIgnored;
 };
 
 /**
@@ -697,22 +710,69 @@ const validateArgs = (args) => {
 };
 
 /**
- * Loads patterns from a file.
+ * Loads and processes patterns from a .cdignore file, including templates.
  *
- * @param {string} filePath - The path to the file.
+ * @param {string} filePath - The path to the .cdignore file.
  * @returns {string[]} An array of patterns.
  */
 const loadPatternsFromFile = (filePath) => {
   try {
     if (!filePath) return [];
     const content = readFileSync(filePath, 'utf-8');
-    return content
-      .split('\n')
-      .filter((line) => line.trim() !== '' && !line.startsWith('#'));
+    const lines = content.split('\n');
+    
+    let patterns = [];
+    
+    for (let line of lines) {
+      line = line.trim();
+      if (!line || line.startsWith('#')) continue;
+      
+      // Handle template inclusion
+      if (line.startsWith('@include ')) {
+        const templatePath = join(dirname(filePath), line.slice(9).trim());
+        if (existsSync(templatePath)) {
+          try {
+            const templatePatterns = loadPatternsFromFile(templatePath);
+            patterns.push(...templatePatterns);
+          } catch (error) {
+            console.warn(`Warning: Could not read template file ${templatePath}: ${error.message}`);
+          }
+        } else {
+          console.warn(`Warning: Template file not found: ${templatePath}`);
+        }
+        continue;
+      }
+      
+      // If pattern doesn't include a path separator and isn't a glob pattern,
+      // make it match anywhere in the tree
+      if (!line.startsWith('!') && 
+          !line.includes('/') && 
+          !line.includes('*')) {
+        patterns.push(`**/${line}`);
+      } else {
+        patterns.push(line);
+      }
+    }
+    
+    return patterns;
   } catch (error) {
     console.error(`Error reading patterns from ${filePath}: ${error.message}`);
     return [];
   }
+};
+
+/**
+ * Loads patterns from a .cdignore file if it exists in the given directory.
+ *
+ * @param {string} dirPath - The directory to look for .cdignore
+ * @returns {string[]} An array of patterns from the .cdignore file
+ */
+const loadCdignorePatterns = (dirPath) => {
+  const cdignorePath = join(dirPath, '.cdignore');
+  if (existsSync(cdignorePath)) {
+    return loadPatternsFromFile(cdignorePath);
+  }
+  return [];
 };
 
 /**
@@ -869,8 +929,16 @@ Options:
   --ultra-quiet, -uq                   Suppress all non-error output
   --help, -h                           Display this help message
 
+Special Files:
+  .cdignore                            If present in the target directory, patterns from this file
+                                       will be automatically added to the ignore list
+
 Examples:
   # Basic usage with default options
+  node codedigest.mjs
+
+  # Use .cdignore file in the target directory
+  echo "*.log\ntemp/" > .cdignore
   node codedigest.mjs
 
   # Specify a directory and output file
@@ -909,8 +977,15 @@ const main = async () => {
     const args = parseArgs();
     validateArgs(args);
 
+    const rootPath = resolve(args.path);
+    const outputFilePath = resolve(args.outputFile);
+
+    // Load patterns from .cdignore if it exists
+    const cdignorePatterns = loadCdignorePatterns(rootPath);
+
     const ignorePatterns = [
       ...Array.from(DEFAULT_IGNORE_PATTERNS),
+      ...cdignorePatterns, // Add patterns from .cdignore
       ...(args.ignoreFile ? loadPatternsFromFile(args.ignoreFile) : []),
       ...args.ignorePatterns,
     ];
@@ -918,9 +993,6 @@ const main = async () => {
       ...(args.includeFile ? loadPatternsFromFile(args.includeFile) : []),
       ...args.includePatterns,
     ];
-
-    const rootPath = resolve(args.path);
-    const outputFilePath = resolve(args.outputFile);
 
     if (outputFilePath.startsWith(rootPath)) {
       const relativeOutputPath   = relative(rootPath, outputFilePath);

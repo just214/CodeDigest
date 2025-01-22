@@ -129,7 +129,41 @@ Examples:
 
 ### Ignore & Include Patterns
 
-**CodeDigest** comes with a comprehensive set of default ignore patterns to exclude common files and directories that are typically unnecessary for analysis or could clutter the digest. Below is the **full list of default exclude patterns**:
+**CodeDigest** supports multiple ways to specify ignore patterns:
+
+1. **Built-in defaults** (comprehensive set of common excludes)
+2. **`.cdignore` file** in the target directory
+3. **Command-line options** (`--ignore-file` and `--ignore-pattern`)
+
+#### .cdignore File Format
+
+The `.cdignore` file supports glob patterns, literal paths, and template inclusion:
+
+```plaintext
+# Comments start with #
+*.test.js                # Ignore all test files
+test/                    # Ignore test directory
+!important-test.js       # Don't ignore this specific test file
+
+# Include patterns from other files using @include
+@include .gitignore      # Include all patterns from .gitignore
+@include .npmignore      # Include all patterns from .npmignore
+@include custom/ignore   # Include patterns from a custom file
+```
+
+**Features:**
+- **Literal Paths**: Simply list files or directories to ignore
+- **Glob Patterns**: Use standard glob syntax (*, **, ?, etc.)
+- **Negation**: Use ! to explicitly not ignore a file
+- **Templates**: Include patterns from other files using @include
+- **Comments**: Lines starting with # are ignored
+- **Path Resolution**: Template paths are resolved relative to the .cdignore file
+
+The `.cdignore` file is automatically loaded if present in the target directory. Its patterns are combined with any other ignore patterns specified via command-line options.
+
+#### Default Ignore Patterns
+
+CodeDigest comes with a comprehensive set of default ignore patterns:
 
 **Note:** Always ensure that the default ignore patterns align with your project's specific needs. You can customize them further using the provided command-line options to tailor the digest to your requirements.
 
@@ -274,71 +308,4 @@ vendor/
 - **Log and Temporary Files:** `*.log`, `*.tmp`, `*.temp`, `*.bak`, `*.swp`, etc. – These files are typically temporary or logs that are not useful for code analysis.
 - **Media Files:** `*.svg`, `*.png`, `*.jpg`, `*.jpeg`, `*.gif`, `*.ico`, `*.pdf`, `*.mov`, `*.mp4`, `*.mp3`, `*.wav`, etc. – These files are non-textual and usually not necessary for code digestion.
 - **Lock Files:** `poetry.lock`, `Pipfile.lock`, `package-lock.json`, `yarn.lock`, `Cargo.lock` – These files lock dependencies but may not be needed in the digest.
-- **Others:** Patterns like `**/*.rs.bk`, `*.min.js`, `*.min.css`, etc., exclude backup files and minified code which can be less readable.
-
-**Customizing Ignore Patterns:**
-
-- **Via Command Line:**
-  - Add extra patterns using `--ignore-pattern` or `-i`. For example:
-    ```bash
-    node codedigest.mjs --ignore-pattern '*.log' --ignore-pattern 'temp/'
-    ```
-- **Via Ignore File:**
-  - Create a file (e.g., `.gitignore`) with your custom ignore patterns and specify it using `--ignore <file>` or `-g <file>`. For example:
-    ```bash
-    node codedigest.mjs --ignore .gitignore
-    ```
-
-### Include Patterns
-- If **include** patterns are specified, **only** files matching those patterns are processed (unless ignored).
-- Useful if you only want `.js`, `.py`, etc.
-
-For example:
-```bash
-./codedigest.mjs --path ./myproject \
-  --include-pattern '*.js' \
-  --include-pattern '*.md'
-```
-
-### How CodeDigest Works
-
-1. **Directory Traversal**  
-   Recursively scans folders up to a user-defined depth, respecting symlinks (and avoiding loops).
-2. **Ignore/Include Checking**  
-   Skips any paths matching ignore patterns. Uses include patterns to filter if specified.
-3. **File Reading**  
-   - Only reads **text-based** files (checked by extension and simple binary detection).  
-   - Skips files larger than `--max-size`.  
-   - Stops adding new files once `--max-total-size` is reached (but still traverses the structure).
-4. **Omitting Excluded Files from Directory Tree**  
-   - When `--omit-excluded` is enabled, excluded files and directories are not displayed in the directory tree, reducing clutter especially in projects with large dependencies like `node_modules`.
-5. **Single File Output**  
-   - Generates a **directory tree** in text form (optionally omitting excluded files).  
-   - Appends each included file's content to the digest.  
-   - Summarizes stats (files processed, excluded, errors, etc.) at the end.
-
-### Nuances & Limits
-
-- **Size Limits**  
-  - Default `--max-size=10MB`, `--max-total-size=500MB`.  
-  - Prevents producing massive output files that are unwieldy or slow to load into an LLM.
-- **Directory Depth**  
-  - Default `--max-depth=20`.  
-  - Prevents running forever on enormous or deeply nested repositories.
-- **Symlinks**  
-  - Symlinks are tracked so CodeDigest doesn’t loop infinitely on recursive links.
-  - Broken symlinks generate warnings but do not stop the script.
-- **File Type Detection**  
-  - A set of known text extensions is used (e.g., `.js`, `.py`, `.md`, etc.).  
-  - Otherwise checks for null characters.
-- **Large Directories**  
-  - For big projects, be mindful of memory and time. Possibly add more ignore patterns or reduce `--max-depth`.
-- **Omitting Excluded Files**  
-  - Using `--omit-excluded` helps in keeping the directory tree clean by excluding files and directories that match ignore patterns. This is particularly useful for projects with large dependency directories like `node_modules` or extensive import structures, ensuring the directory tree remains readable and focused on relevant parts of the codebase.
-
-### License
-
-This project is licensed under the [MIT License](LICENSE). You can use, modify, and distribute the code as long as the original license is included.
-
-**Enjoy CodeDigest!**  
-If you have questions or ideas, open an issue or PR.
+- **Others:** Patterns like `**/*.rs.bk`, `
