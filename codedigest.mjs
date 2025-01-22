@@ -499,16 +499,32 @@ const processDirectory = (
       const entryPath         = join(dirPath, entry.name);
       const relativeEntryPath = relative(rootPath, entryPath);
 
+
+      if (
+        shouldIgnore(relativeEntryPath, ignorePatterns, {
+          nocase: true,
+          dot:    true,
+        }, stats)
+      ) {
+        stats.excludedFiles++;
+        continue;
+      }
+
+
       if (omitExcluded) {
         if (
-          shouldIgnore(relativeEntryPath, ignorePatterns, {
-            nocase: true,
-            dot:    true,
-          }, stats)
+          includePatterns.length > 0 &&
+          !includePatterns.some((p) =>
+            miniMatch(
+              normalize(relativeEntryPath).split(sep).join('/'),
+              p,
+              { nocase: true, dot: true, matchBase: !p.includes('/') }
+            )
+          )
         ) {
-          stats.excludedFiles++;
           continue;
         }
+      } else {
         if (
           includePatterns.length > 0 &&
           !includePatterns.some((p) =>
@@ -523,6 +539,7 @@ const processDirectory = (
           continue;
         }
       }
+
 
       if (entry.isSymbolicLink()) {
         try {
