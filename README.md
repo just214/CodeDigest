@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://github.com/Nowayz/CodeDigest/blob/resources/codedigest_logo.png?raw=true" alt="logo"/>
+  <img src="https://raw.githubusercontent.com/Nowayz/CodeDigest/refs/heads/resources/codedigest_logo.png" alt="logo"/>
 </p>
 CodeDigest is a single-file Node.js command-line tool that consolidates an entire code repository (directory structure and text-based files) into a digest file for easy consumption by your preferred LLM (Large Language Model). It helps you quickly gather all source code in one place so you can feed it into LLM-based tools for analysis, code generation, or any other AI-driven development workflows.
 
