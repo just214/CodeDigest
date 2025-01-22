@@ -82,6 +82,7 @@ const FORMAT = {
  * @property {number} startTime - Timestamp of the start of processing.
  * @property {Set<string>} matchedIgnorePatterns - Set of ignore patterns that matched at least one file/directory.
  * @property {Set<string>} matchedIncludePatterns - Set of include patterns that matched at least one file/directory.
+ * @property {Object<string, number>} extensionSizes -  Object to track size per file extension.
  */
 
 /**
@@ -114,6 +115,7 @@ const createStats = () => ({
   startTime:             Date.now(),
   matchedIgnorePatterns: new Set(),
   matchedIncludePatterns: new Set(),
+  extensionSizes:        {}, // Initialize extensionSizes here
   /**
    * Adds an error to the errors array.
    *
@@ -435,6 +437,10 @@ const processFile = (filePath, maxFileSize, stats, files, rootPath, options) => 
     stats.totalSize += fileSize;
     stats.fileCount++;
 
+    // Calculate extension sizes
+    const ext = extname(filePath).toLowerCase().slice(1); // Get extension without '.'
+    stats.extensionSizes[ext] = (stats.extensionSizes[ext] || 0) + fileSize;
+
     const relativePath = relative(rootPath, filePath);
     files.push({
       path:    relativePath,
@@ -715,6 +721,43 @@ const loadPatternsFromFile = (filePath) => {
 };
 
 /**
+ * Calculates the percentage of file sizes per extension.
+ *
+ * @param {Object<string, number>} extensionSizes - Object containing extension sizes.
+ * @param {number} totalSize - Total size of all processed files.
+ * @returns {Object<string, number>} Object with extension percentages.
+ */
+const calculateExtensionPercentages = (extensionSizes, totalSize) => {
+  const percentages = {};
+  for (const ext in extensionSizes) {
+    percentages[ext] = (totalSize > 0) ? (extensionSizes[ext] / totalSize) * 100 : 0;
+  }
+  return percentages;
+};
+
+/**
+ * Generates a simple text-based bar graph for file extension percentages.
+ *
+ * @param {Object<string, number>} extensionPercentages - Object with extension percentages.
+ * @returns {string} Bar graph string.
+ */
+const generateBarGraph = (extensionPercentages) => {
+  const barLength = 20; // Length of the bar
+  let graph = '';
+  const sortedExtensions = Object.entries(extensionPercentages)
+    .sort(([, percentA], [, percentB]) => percentB - percentA); // Sort by percentage descending
+
+  for (const [ext, percent] of sortedExtensions) {
+    const filledBars = Math.round((percent / 100) * barLength);
+    const emptyBars  = barLength - filledBars;
+    const bar        = '█'.repeat(filledBars) + '—'.repeat(emptyBars);
+    graph += `${FORMAT.white(ext.padEnd(12))}: ${FORMAT.green(bar)} ${percent.toFixed(1)}%\n`;
+  }
+  return graph;
+};
+
+
+/**
  * Generates a summary of the processing results.
  *
  * @param {string} path - The path to the processed directory.
@@ -727,8 +770,11 @@ const generateSummary = (path, stats, options, outputFile) => {
   const { includePatterns, maxFileSize, maxTotalSize, maxDepth } = options;
 
   const executionTime = Date.now() - stats.startTime;
-  
+
   const { bold, red, green, yellow, white, gray, invert } = FORMAT;
+
+  const extensionPercentages = calculateExtensionPercentages(stats.extensionSizes, stats.totalSize);
+  const barGraph           = generateBarGraph(extensionPercentages);
 
   return `
 ${invert(bold(' Digest Summary '))}
@@ -755,10 +801,9 @@ ${bold('Include patterns that matched:')} ${
       ? `\n ${gray(Array.from(stats.matchedIncludePatterns).join('\n  '))}`
       : 'None'
 }
-${white('Include patterns:')}   ${
-    includePatterns.length ? `\n ${gray(includePatterns.join('\n  '))}` : 'None'
-}
 
+${invert(bold(' File Size by Extension '))}
+${barGraph}
 ${invert(bold(` Errors (${stats.errors.length}) `))}
 ${
     stats.errors.length
