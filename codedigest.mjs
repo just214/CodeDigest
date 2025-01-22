@@ -710,7 +710,7 @@ const validateArgs = (args) => {
 };
 
 /**
- * Loads and processes patterns from a .cdignore file with sections and templates.
+ * Loads and processes patterns from a .cdignore file, including templates.
  *
  * @param {string} filePath - The path to the .cdignore file.
  * @returns {string[]} An array of patterns.
@@ -722,31 +722,17 @@ const loadPatternsFromFile = (filePath) => {
     const lines = content.split('\n');
     
     let patterns = [];
-    let currentSection = null;
     
     for (let line of lines) {
       line = line.trim();
-      
-      // Skip empty lines and comments
       if (!line || line.startsWith('#')) continue;
       
-      // Check for section markers
-      if (line.startsWith('[') && line.endsWith(']')) {
-        currentSection = line.slice(1, -1).toLowerCase();
-        continue;
-      }
-      
-      // Handle templates section
-      if (currentSection === 'templates') {
-        const templatePath = join(dirname(filePath), line);
+      // Handle template inclusion
+      if (line.startsWith('@include ')) {
+        const templatePath = join(dirname(filePath), line.slice(9).trim());
         if (existsSync(templatePath)) {
           try {
-            const templateContent = readFileSync(templatePath, 'utf-8');
-            const templatePatterns = templateContent
-              .split('\n')
-              .map(l => l.trim())
-              .filter(l => l && !l.startsWith('#'))
-              .map(pattern => normalizePattern(pattern));
+            const templatePatterns = loadPatternsFromFile(templatePath);
             patterns.push(...templatePatterns);
           } catch (error) {
             console.warn(`Warning: Could not read template file ${templatePath}: ${error.message}`);
@@ -757,64 +743,21 @@ const loadPatternsFromFile = (filePath) => {
         continue;
       }
       
-      // Handle regular patterns and literal paths
-      patterns.push(normalizePattern(line, filePath));
+      // If pattern doesn't include a path separator and isn't a glob pattern,
+      // make it match anywhere in the tree
+      if (!line.startsWith('!') && 
+          !line.includes('/') && 
+          !line.includes('*')) {
+        patterns.push(`**/${line}`);
+      } else {
+        patterns.push(line);
+      }
     }
     
     return patterns;
   } catch (error) {
     console.error(`Error reading patterns from ${filePath}: ${error.message}`);
     return [];
-  }
-};
-
-/**
- * Normalizes a pattern or literal path into a glob pattern.
- *
- * @param {string} pattern - The pattern or path to normalize.
- * @param {string} [basePath] - The base path for resolving relative paths.
- * @returns {string} The normalized pattern.
- */
-const normalizePattern = (pattern, basePath = null) => {
-  // Handle negation patterns
-  if (pattern.startsWith('!')) {
-    return pattern;
-  }
-  
-  // If the pattern contains glob special characters, treat it as a pattern
-  const hasGlobChars = /[*?[\]{}()]/.test(pattern);
-  
-  if (hasGlobChars) {
-    // Convert directory markers to proper glob patterns
-    if (pattern.endsWith('/')) {
-      return pattern + '**';
-    }
-    return pattern;
-  } else {
-    // Treat as literal path
-    if (basePath) {
-      const fullPath = join(dirname(basePath), pattern);
-      if (existsSync(fullPath)) {
-        const isDir = lstatSync(fullPath).isDirectory();
-        if (isDir) {
-          // Match the directory and all its contents
-          return `${pattern}/**`;
-        }
-      }
-    }
-    
-    // For files or non-existent paths
-    // If it starts with ../, treat it as a relative path pattern
-    if (pattern.startsWith('../')) {
-      return pattern;
-    }
-    
-    // If it doesn't include a path separator, make it match anywhere
-    if (!pattern.includes('/')) {
-      return `**/${pattern}`;
-    }
-    
-    return pattern;
   }
 };
 
