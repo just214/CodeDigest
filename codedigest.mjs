@@ -156,14 +156,14 @@ function miniMatch(path, pattern, opts = {}) {
       pat = pat.slice(1);
     }
 
-    const parts     = pat.split(sep);
+    const parts = pat.split(sep);
     const pathParts = path.split(sep);
 
     // Matches a single path component
     const matchPart = (pathPart, patPart) => {
       if (patPart === '**') return true;
       const regexStr = patPart.split('*').map(escapeRegExp).join('.*');
-      const regex    = new RegExp(`^${regexStr}$`, nocase ? 'i' : '');
+      const regex = new RegExp(`^${regexStr}$`, nocase ? 'i' : '');
       return regex.test(pathPart);
     };
 
@@ -175,21 +175,33 @@ function miniMatch(path, pattern, opts = {}) {
     }
 
     // Recursive matching
-    const match = (pathParts, patParts) => {
-      if (patParts.length === 0) return pathParts.length === 0;
-      if (patParts[0] === '**') {
-        if (patParts.length === 1) return true;
-        for (let i = 0; i <= pathParts.length; i++) {
-          if (match(pathParts.slice(i), patParts.slice(1))) return true;
+    const match = (pathPartsRemaining, patPartsRemaining) => {
+      if (patPartsRemaining.length === 0) return pathPartsRemaining.length === 0;
+      if (patPartsRemaining[0] === '**') {
+        if (patPartsRemaining.length === 1) return true;
+        for (let i = 0; i <= pathPartsRemaining.length; i++) {
+          if (match(pathPartsRemaining.slice(i), patPartsRemaining.slice(1))) return true;
         }
         return false;
       }
-      if (pathParts.length === 0 || !matchPart(pathParts[0], patParts[0])) return false;
-      return match(pathParts.slice(1), patParts.slice(1));
+      if (pathPartsRemaining.length === 0 || !matchPart(pathPartsRemaining[0], patPartsRemaining[0])) return false;
+      return match(pathPartsRemaining.slice(1), patPartsRemaining.slice(1));
     };
 
-    let result = match(pathParts, parts);
-    return neg ? !result : result;
+    if (matchBase) {
+      // When matchBase is true, check if any part of the path matches the pattern
+      return pathParts.some((part) => {
+        const singlePathMatch = match([part], parts);
+        if (neg) {
+          return !singlePathMatch;
+        }
+        return singlePathMatch;
+      });
+    } else {
+      // Standard matching
+      let result = match(pathParts, parts);
+      return neg ? !result : result;
+    }
   } catch (error) {
     console.error(`Error in pattern matching: ${error.message}`);
     return false;
@@ -211,7 +223,7 @@ const shouldExclude = (path, ignorePatterns, minimatchOptions, stats) => {
   let shouldBeExcluded = false;
 
   for (const pattern of ignorePatterns) {
-    const isNegated     = pattern.startsWith('!');
+    const isNegated = pattern.startsWith('!');
     const actualPattern = isNegated ? pattern.slice(1) : pattern;
 
     const match = miniMatch(normalizedPath, actualPattern, {
@@ -281,9 +293,9 @@ const readFileContent = (filePath, maxFileSize) => {
     }
 
     if (stats.size > CHUNK_SIZE) {
-      const fd     = openSync(filePath, 'r');
+      const fd = openSync(filePath, 'r');
       const buffer = Buffer.alloc(CHUNK_SIZE);
-      let content  = '';
+      let content = '';
       let bytesRead;
 
       try {
@@ -340,10 +352,10 @@ const isTextFile = (filePath) => {
  */
 const formatBytes = (bytes, decimals = 2) => {
   if (bytes === 0) return '0 Bytes';
-  const k     = 1024;
-  const dm    = decimals < 0 ? 0 : decimals;
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
-  const i     = Math.floor(Math.log(bytes) / Math.log(k));
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
 };
 
@@ -434,7 +446,6 @@ const processFile = (filePath, maxFileSize, stats, files, rootPath, options) => 
     if (!options.quiet && !options.ultraQuiet) {
       console.log(`${FORMAT.bold('Added to digest:')} ${relativePath}`);
     }
-
   } catch (error) {
     stats.addError(error);
     console.error(`Error processing file ${filePath}: ${error.message}`);
@@ -499,7 +510,6 @@ const processDirectory = (
       const relativeEntryPath = relative(rootPath, entryPath);
       const normalizedPath    = normalize(relativeEntryPath).split(sep).join('/');
 
-
       // --- 1. Include check ---
       if (!isIncludedByPatterns(normalizedPath, includePatterns, stats)) {
         stats.filteredFiles++;
@@ -518,7 +528,6 @@ const processDirectory = (
         stats.filteredFiles++;
         continue;
       }
-
 
       // If we get here, it's included and not excluded
       if (entry.isSymbolicLink()) {
@@ -612,13 +621,13 @@ const generateDirectoryTree = (
     // Always omit excluded items
     filteredEntries = entries.filter((entry) => {
       const relPath = relative(rootPath, join(dirPath, entry.name));
-      const norm    = normalize(relPath).split(sep).join('/');
+      const norm = normalize(relPath).split(sep).join('/');
       // Exclude if it's ignored
-      if (shouldExclude(norm, ignorePatterns, { nocase: true, dot: true })) {
+      if (shouldExclude(norm, ignorePatterns, { nocase: true, dot: true }, null)) {
         return false;
       }
       // Exclude if it fails includes
-      return isIncludedByPatterns(norm, includePatterns, /* stats = */ null);
+      return isIncludedByPatterns(norm, includePatterns, { matchedIncludePatterns: new Set() });
     });
 
     filteredEntries.forEach((entry, index) => {
@@ -627,7 +636,7 @@ const generateDirectoryTree = (
         return;
       }
 
-      const isLast    = index === filteredEntries.length - 1;
+      const isLast = index === filteredEntries.length - 1;
       const entryPath = join(dirPath, entry.name);
 
       result.content += `${prefix}${isLast ? '└── ' : '├── '}${entry.name}${entry.isDirectory() ? '/' : ''}\n`;
@@ -713,24 +722,11 @@ const loadPatternsFromFile = (filePath) => {
  * @returns {string} The summary string.
  */
 const generateSummary = (path, stats, options, outputFile) => {
-  const {
-    includePatterns,
-    maxFileSize,
-    maxTotalSize,
-    maxDepth,
-  } = options;
+  const { includePatterns, maxFileSize, maxTotalSize, maxDepth } = options;
 
   const executionTime = Date.now() - stats.startTime;
 
-  const {
-    bold,
-    red,
-    green,
-    yellow,
-    white,
-    gray,
-    invert,
-  } = FORMAT;
+  const { bold, red, green, yellow, white, gray, invert } = FORMAT;
 
   return `
 ${invert(bold(' Digest Summary '))}
@@ -754,11 +750,11 @@ ${bold('Ignore patterns that matched:')} ${
 }
 ${bold('Include patterns that matched:')} ${
     stats.matchedIncludePatterns.size > 0
-      ? `\n ${gray(Array.from(stats.matchedIncludePatterns).join('\n  '))}`
+      ? `\n  ${gray(Array.from(stats.matchedIncludePatterns).join('\n  '))}`
       : 'None'
 }
 ${white('Include patterns:')}   ${
-    includePatterns.length ? `\n ${gray(includePatterns.join('\n  '))}` : 'None'
+    includePatterns.length ? `\n  ${gray(includePatterns.join('\n  '))}` : 'None'
 }
 
 ${invert(bold(` Errors (${stats.errors.length}) `))}
@@ -913,12 +909,12 @@ const main = async () => {
       ...args.includePatterns,
     ];
 
-    const rootPath       = resolve(args.path);
+    const rootPath = resolve(args.path);
     const outputFilePath = resolve(args.outputFile);
 
     // Exclude the output file itself from the digest
     if (outputFilePath.startsWith(rootPath)) {
-      const relativeOutputPath   = relative(rootPath, outputFilePath);
+      const relativeOutputPath = relative(rootPath, outputFilePath);
       const normalizedOutputPath = relativeOutputPath.split(sep).join('/');
       ignorePatterns.push(normalizedOutputPath);
     }
@@ -945,13 +941,13 @@ const main = async () => {
 
     // Create stats, then process the directory
     const statsObj = createStats();
-    const files    = processDirectory(args.path, options, statsObj);
+    const files = processDirectory(args.path, options, statsObj);
 
     // Build the digest of file contents
     const digestContent = files.map((file) => {
-      const separator = '='.repeat(48) + '\n';
-      return `${separator}File: ${file.path}\n${separator}${file.content}\n`;
-    }).join('');
+        const separator = '='.repeat(48) + '\n';
+        return `${separator}File: ${file.path}\n${separator}${file.content}\n`;
+      }).join('');
 
     // Build directory tree (always omitting filtered items)
     const directoryTree = generateDirectoryTree(
@@ -982,7 +978,7 @@ const main = async () => {
     if (statsObj.errors.length > 0 && !args.ultraQuiet) {
       console.warn(
         `\nWarning: ${statsObj.errors.length} errors occurred during processing. ` +
-        `Check the console for details.`
+          `Check the console for details.`
       );
     }
   } catch (error) {
