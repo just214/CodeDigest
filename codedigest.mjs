@@ -10,7 +10,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync, readdirS
 import { join, extname, dirname, relative, resolve, sep, normalize } from 'node:path';
 
 const MAX_FILE_SIZE        = 10 * 1024 * 1024;  // 10 MB
-const MAX_DIRECTORY_DEPTH  = 20;                
+const MAX_DIRECTORY_DEPTH  = 20;
 const MAX_TOTAL_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 const CHUNK_SIZE           = 1024 * 1024;       // 1 MB
 
@@ -216,7 +216,9 @@ function miniMatch(path, pattern, opts = {}) {
 }
 
 /**
- * Checks if a path should be ignored based on the given ignore patterns.
+ * Checks if a path should be ignored based on the given ignore patterns,
+ * replicating .gitignore-like "last pattern wins" logic, with path normalized
+ * to use `/` separators and matchBase for patterns without a slash.
  *
  * @param {string} path - The path to check.
  * @param {string[]} ignorePatterns - The patterns to ignore.
@@ -225,19 +227,36 @@ function miniMatch(path, pattern, opts = {}) {
  * @returns {boolean} True if the path should be ignored, false otherwise.
  */
 const shouldIgnore = (path, ignorePatterns, minimatchOptions, stats) => {
-  const normalizedPath = normalize(path);
+  // Force forward slashes for consistent matching
+  const normalizedPath = normalize(path).split(sep).join('/');
+
+  // Track the final ignore status after evaluating *all* patterns
+  let shouldBeIgnored = false;
+
   for (const pattern of ignorePatterns) {
     const isNegated     = pattern.startsWith('!');
     const actualPattern = isNegated ? pattern.slice(1) : pattern;
-    const match         = miniMatch(normalizedPath, actualPattern, minimatchOptions);
+
+    const match = miniMatch(normalizedPath, actualPattern, {
+      ...minimatchOptions,
+      // For patterns without '/', act like gitignore's "basename" match
+      matchBase: !actualPattern.includes('/'),
+    });
+
     if (match) {
+      // If we match a non-negated pattern, set ignored to true
+      // If we match a negated pattern, set ignored to false
+      shouldBeIgnored = !isNegated;
+
+      // Keep track of which pattern matched only if it leads to ignoring
       if (!isNegated && stats) {
         stats.matchedIgnorePatterns.add(pattern);
       }
-      return !isNegated ? true : false;
+      // We do NOT return immediately—last pattern wins
     }
   }
-  return false;
+
+  return shouldBeIgnored;
 };
 
 /**
@@ -442,9 +461,9 @@ const processDirectory = (
     maxDepth        = MAX_DIRECTORY_DEPTH,
     currentDepth    = 0,
     rootPath        = dirPath,
-    quiet,           // Added for options
-    ultraQuiet,      // Added for options
-    omitExcluded,    // New option
+    quiet,
+    ultraQuiet,
+    omitExcluded,
   },
   stats = createStats()
 ) => {
@@ -477,8 +496,8 @@ const processDirectory = (
         break;
       }
 
-      const entryPath           = join(dirPath, entry.name);
-      const relativeEntryPath   = relative(rootPath, entryPath);
+      const entryPath         = join(dirPath, entry.name);
+      const relativeEntryPath = relative(rootPath, entryPath);
 
       if (omitExcluded) {
         if (
@@ -493,7 +512,11 @@ const processDirectory = (
         if (
           includePatterns.length > 0 &&
           !includePatterns.some((p) =>
-            miniMatch(relativeEntryPath, p, { nocase: true, dot: true })
+            miniMatch(
+              normalize(relativeEntryPath).split(sep).join('/'),
+              p,
+              { nocase: true, dot: true, matchBase: !p.includes('/') }
+            )
           )
         ) {
           stats.excludedFiles++;
@@ -603,22 +626,20 @@ const generateDirectoryTree = (
 
     if (omitExcluded) {
       filteredEntries = entries
-        .filter((entry) =>
-          !shouldIgnore(
-            relative(rootPath, join(dirPath, entry.name)),
-            ignorePatterns,
-            { nocase: true, dot: true }
-          )
-        )
-        .filter((entry) =>
-          includePatterns.length === 0 ||
-          includePatterns.some((p) =>
-            miniMatch(relative(rootPath, join(dirPath, entry.name)), p, {
-              nocase: true,
-              dot:    true,
-            })
-          )
-        );
+        .filter((entry) => {
+          const rel = normalize(relative(rootPath, join(dirPath, entry.name))).split(sep).join('/');
+          return !shouldIgnore(rel, ignorePatterns, { nocase: true, dot: true })
+            && (
+              includePatterns.length === 0
+              || includePatterns.some((p) =>
+                  miniMatch(rel, p, {
+                    nocase: true,
+                    dot: true,
+                    matchBase: !p.includes('/'),
+                  })
+                )
+            );
+        });
     }
 
     filteredEntries.forEach((entry, index) => {
@@ -708,7 +729,8 @@ const loadPatternsFromFile = (filePath) => {
     const content = readFileSync(filePath, 'utf-8');
     return content
       .split('\n')
-      .filter((line) => line.trim() !== '' && !line.startsWith('#'));
+      .map((line) => line.trim())
+      .filter((line) => line !== '' && !line.startsWith('#'));
   } catch (error) {
     console.error(`Error reading patterns from ${filePath}: ${error.message}`);
     return [];
@@ -735,7 +757,7 @@ const generateSummary = (path, stats, options, outputFile) => {
     omitExcluded,
   } = options;
 
-  const executionTime   = Date.now() - stats.startTime;
+  const executionTime = Date.now() - stats.startTime;
 
   const {
     bold,
@@ -792,53 +814,59 @@ ${outputFile}
  * @returns {Object} The parsed arguments.
  */
 const parseArgs = () => {
-  const args          = process.argv.slice(2);
-  const parsedArgs    = {
-    path:            '.',
-    outputFile:      'digest.txt',
-    ignoreFile:      null,
-    includeFile:     null,
-    ignorePatterns:  [],
-    includePatterns: [],
-    maxSize:         MAX_FILE_SIZE,
-    maxTotalSize:    MAX_TOTAL_SIZE_BYTES,
-    maxDepth:        MAX_DIRECTORY_DEPTH,
-    quiet:           false,
-    ultraQuiet:      false,
-    omitExcluded:    false,
+  const args = process.argv.slice(2);
+  const parsedArgs = {
+    path:                '.',
+    outputFile:          'digest.txt',
+    ignoreFile:          null,
+    includeFile:         null,
+    ignorePatterns:      [],
+    includePatterns:     [],
+    maxSize:             MAX_FILE_SIZE,
+    maxTotalSize:        MAX_TOTAL_SIZE_BYTES,
+    maxDepth:            MAX_DIRECTORY_DEPTH,
+    quiet:               false,
+    ultraQuiet:          false,
+    omitExcluded:        false,
+    skipDefaultIgnore:   false,
   };
 
   for (let i = 0; i < args.length; i++) {
     switch (args[i]) {
       // Long options
-      case '--path':            parsedArgs.path            = args[++i]; break;
-      case '--output':          parsedArgs.outputFile      = args[++i]; break;
-      case '--ignore':          parsedArgs.ignoreFile      = args[++i]; break;
-      case '--include':         parsedArgs.includeFile     = args[++i]; break;
-      case '--ignore-pattern':  parsedArgs.ignorePatterns.push(args[++i]); break;
-      case '--include-pattern': parsedArgs.includePatterns.push(args[++i]); break;
-      case '--max-size':        parsedArgs.maxSize         = parseInt(args[++i], 10); break;
-      case '--max-total-size':  parsedArgs.maxTotalSize    = parseInt(args[++i], 10); break;
-      case '--max-depth':       parsedArgs.maxDepth        = parseInt(args[++i], 10); break;
-      case '--quiet':           parsedArgs.quiet           = true; break;
-      case '--ultra-quiet':     parsedArgs.ultraQuiet      = true; break;
-      case '--omit-excluded':   parsedArgs.omitExcluded    = true; break;
-      case '--help':            printHelp(); process.exit(0);
+      case '--path':                parsedArgs.path              = args[++i]; break;
+      case '--output':              parsedArgs.outputFile        = args[++i]; break;
+      case '--ignore':              parsedArgs.ignoreFile        = args[++i]; break;
+      case '--include':             parsedArgs.includeFile       = args[++i]; break;
+      case '--ignore-pattern':      parsedArgs.ignorePatterns.push(args[++i]); break;
+      case '--include-pattern':     parsedArgs.includePatterns.push(args[++i]); break;
+      case '--max-size':            parsedArgs.maxSize           = parseInt(args[++i], 10); break;
+      case '--max-total-size':      parsedArgs.maxTotalSize      = parseInt(args[++i], 10); break;
+      case '--max-depth':           parsedArgs.maxDepth          = parseInt(args[++i], 10); break;
+      case '--omit-excluded':       parsedArgs.omitExcluded      = true; break;
+      case '--quiet':               parsedArgs.quiet             = true; break;
+      case '--ultra-quiet':         parsedArgs.ultraQuiet        = true; break;
+      case '--skip-default-ignore': parsedArgs.skipDefaultIgnore = true; break;
+      case '--help':                printHelp(); process.exit(0);
 
       // Short options
-      case '-p':                parsedArgs.path            = args[++i]; break;
-      case '-o':                parsedArgs.outputFile      = args[++i]; break;
-      case '-g':                parsedArgs.ignoreFile      = args[++i]; break;
-      case '-n':                parsedArgs.includeFile     = args[++i]; break;
-      case '-i':                parsedArgs.ignorePatterns.push(args[++i]); break;
-      case '-I':                parsedArgs.includePatterns.push(args[++i]); break;
-      case '-s':                parsedArgs.maxSize         = parseInt(args[++i], 10); break;
-      case '-t':                parsedArgs.maxTotalSize    = parseInt(args[++i], 10); break;
-      case '-d':                parsedArgs.maxDepth        = parseInt(args[++i], 10); break;
-      case '-q':                parsedArgs.quiet           = true; break;
-      case '-uq':               parsedArgs.ultraQuiet      = true; break;
-      case '-h':                printHelp(); process.exit(0);
-      default:                  console.warn(`Unknown option: ${args[i]}`); printHelp(); process.exit(1);
+      case '-p':                    parsedArgs.path              = args[++i]; break;
+      case '-o':                    parsedArgs.outputFile        = args[++i]; break;
+      case '-g':                    parsedArgs.ignoreFile        = args[++i]; break;
+      case '-n':                    parsedArgs.includeFile       = args[++i]; break;
+      case '-i':                    parsedArgs.ignorePatterns.push(args[++i]); break;
+      case '-I':                    parsedArgs.includePatterns.push(args[++i]); break;
+      case '-s':                    parsedArgs.maxSize           = parseInt(args[++i], 10); break;
+      case '-t':                    parsedArgs.maxTotalSize      = parseInt(args[++i], 10); break;
+      case '-d':                    parsedArgs.maxDepth          = parseInt(args[++i], 10); break;
+      case '-q':                    parsedArgs.quiet             = true; break;
+      case '-uq':                   parsedArgs.ultraQuiet        = true; break;
+      case '-k':                    parsedArgs.skipDefaultIgnore = true; break;
+      case '-h':                    printHelp(); process.exit(0);
+      default:
+        console.warn(`Unknown option: ${args[i]}`);
+        printHelp();
+        process.exit(1);
     }
   }
 
@@ -853,21 +881,20 @@ const printHelp = () => {
 Usage: node codedigest.mjs [options]
 
 Options:
-  --path <path>, -p <path>             Directory to process (default: current directory)
-  --output <file>, -o <file>           Output file path (default: digest.txt)
-  --ignore <file>, -g <file>           File containing ignore patterns
-  --include <file>, -n <file>          File containing include patterns
-  --ignore-pattern <pattern>, -i <pattern>
-                                       Ignore pattern (can be used multiple times)
-  --include-pattern <pattern>, -I <pattern>
-                                       Include pattern (can be used multiple times)
-  --max-size <bytes>, -s <bytes>       Maximum file size (default: ${formatBytes(MAX_FILE_SIZE)})
-  --max-total-size <bytes>, -t <bytes> Maximum total size (default: ${formatBytes(MAX_TOTAL_SIZE_BYTES)})
-  --max-depth <number>, -d <number>    Maximum directory depth (default: ${MAX_DIRECTORY_DEPTH})
-  --omit-excluded                      Omit excluded files from the directory tree
-  --quiet, -q                          Suppress 'Added' and 'Skipped' messages
-  --ultra-quiet, -uq                   Suppress all non-error output
-  --help, -h                           Display this help message
+  --path <path>, -p <path>                 Directory to process (default: current directory)
+  --output <file>, -o <file>               Output file path (default: digest.txt)
+  --ignore <file>, -g <file>               File containing ignore patterns
+  --include <file>, -n <file>              File containing include patterns
+  --ignore-pattern <pattern>, -i <pattern> Ignore pattern (can be used multiple times)
+  --include-pattern <pattern>, -I <pattern>Include pattern (can be used multiple times)
+  --max-size <bytes>, -s <bytes>           Maximum file size (default: ${formatBytes(MAX_FILE_SIZE)})
+  --max-total-size <bytes>, -t <bytes>     Maximum total size (default: ${formatBytes(MAX_TOTAL_SIZE_BYTES)})
+  --max-depth <number>, -d <number>        Maximum directory depth (default: ${MAX_DIRECTORY_DEPTH})
+  --omit-excluded                          Omit excluded files from the directory tree
+  --quiet, -q                              Suppress 'Added' and 'Skipped' messages
+  --ultra-quiet, -uq                       Suppress all non-error output
+  --skip-default-ignore, -k                Skip default ignore patterns; use only user-provided patterns
+  --help, -h                               Display this help message
 
 Examples:
   # Basic usage with default options
@@ -887,7 +914,10 @@ Examples:
 
   # Omit excluded files from the directory tree
   node codedigest.mjs --omit-excluded
-  `);
+
+  # Skip default ignore patterns and use only user-provided patterns
+  node codedigest.mjs --skip-default-ignore --ignore-pattern 'custom/**/*.js'
+`);
 };
 
 /**
@@ -909,19 +939,22 @@ const main = async () => {
     const args = parseArgs();
     validateArgs(args);
 
+    // Bug fix: Instead of ignoring all user patterns, only skip the defaults if skipDefaultIgnore is set
     const ignorePatterns = [
-      ...Array.from(DEFAULT_IGNORE_PATTERNS),
+      ...(args.skipDefaultIgnore ? [] : Array.from(DEFAULT_IGNORE_PATTERNS)),
       ...(args.ignoreFile ? loadPatternsFromFile(args.ignoreFile) : []),
       ...args.ignorePatterns,
     ];
+
     const includePatterns = [
       ...(args.includeFile ? loadPatternsFromFile(args.includeFile) : []),
       ...args.includePatterns,
     ];
 
-    const rootPath = resolve(args.path);
+    const rootPath       = resolve(args.path);
     const outputFilePath = resolve(args.outputFile);
 
+    // Exclude the output file itself from the digest
     if (outputFilePath.startsWith(rootPath)) {
       const relativeOutputPath   = relative(rootPath, outputFilePath);
       const normalizedOutputPath = relativeOutputPath.split(sep).join('/');
@@ -953,8 +986,8 @@ const main = async () => {
     const files    = processDirectory(args.path, options, statsObj);
 
     const digestContent = files.map((file) => {
-        const separator = '='.repeat(48) + '\n';
-        return `${separator}File: ${file.path}\n${separator}${file.content}\n`;
+      const separator = '='.repeat(48) + '\n';
+      return `${separator}File: ${file.path}\n${separator}${file.content}\n`;
     }).join('');
 
     const directoryTree = generateDirectoryTree(
