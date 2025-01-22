@@ -3,7 +3,7 @@
 /**
  * codedigest.mjs - A Node.js script to generate a digest of a directory's structure and file contents.
  *
- * @module CodeDigest
+ * @module codedigest.mjs
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync, readdirSync, readlinkSync, openSync, readSync, closeSync } from 'node:fs';
@@ -93,6 +93,7 @@ const FORMAT = {
  * @property {string} rootPath - The absolute path of the root directory being processed.
  * @property {boolean} quiet - Whether to suppress Added and Skipped messages.
  * @property {boolean} ultraQuiet - Whether to suppress all non-error output.
+ * @property {boolean} omitExcluded - Whether to omit excluded files from the directory tree.
  */
 
 /**
@@ -443,6 +444,7 @@ const processDirectory = (
     rootPath        = dirPath,
     quiet,           // Added for options
     ultraQuiet,      // Added for options
+    omitExcluded,    // New option
   },
   stats = createStats()
 ) => {
@@ -478,23 +480,25 @@ const processDirectory = (
       const entryPath           = join(dirPath, entry.name);
       const relativeEntryPath   = relative(rootPath, entryPath);
 
-      if (
-        shouldIgnore(relativeEntryPath, ignorePatterns, {
-          nocase: true,
-          dot:    true,
-        }, stats)
-      ) {
-        stats.excludedFiles++;
-        continue;
-      }
-      if (
-        includePatterns.length > 0 &&
-        !includePatterns.some((p) =>
-          miniMatch(relativeEntryPath, p, { nocase: true, dot: true })
-        )
-      ) {
-        stats.excludedFiles++;
-        continue;
+      if (omitExcluded) {
+        if (
+          shouldIgnore(relativeEntryPath, ignorePatterns, {
+            nocase: true,
+            dot:    true,
+          }, stats)
+        ) {
+          stats.excludedFiles++;
+          continue;
+        }
+        if (
+          includePatterns.length > 0 &&
+          !includePatterns.some((p) =>
+            miniMatch(relativeEntryPath, p, { nocase: true, dot: true })
+          )
+        ) {
+          stats.excludedFiles++;
+          continue;
+        }
       }
 
       if (entry.isSymbolicLink()) {
@@ -518,6 +522,7 @@ const processDirectory = (
               rootPath,
               quiet,
               ultraQuiet,
+              omitExcluded,
             }
           );
           files.push(...symlinks);
@@ -542,6 +547,7 @@ const processDirectory = (
             rootPath,
             quiet,
             ultraQuiet,
+            omitExcluded,
           },
           stats
         );
@@ -572,6 +578,7 @@ const processDirectory = (
  * @param {string} [rootPath=dirPath] - The root path.
  * @param {{content: string, truncated: boolean}} [result={ content: '', truncated: false }] - The result object.
  * @param {boolean} ultraQuiet - Whether to suppress all non-error output.
+ * @param {boolean} omitExcluded - Whether to omit excluded files from the tree.
  * @returns {string} The directory tree string.
  */
 const generateDirectoryTree = (
@@ -583,7 +590,8 @@ const generateDirectoryTree = (
   prefix       = '',
   rootPath     = dirPath,
   result       = { content: '', truncated: false },
-  ultraQuiet   = false
+  ultraQuiet   = false,
+  omitExcluded = false
 ) => {
   if (currentDepth > maxDepth || result.truncated) {
     return result.content;
@@ -591,23 +599,27 @@ const generateDirectoryTree = (
 
   try {
     const entries = readdirSync(dirPath, { withFileTypes: true });
-    const filteredEntries = entries
-      .filter((entry) =>
-        !shouldIgnore(
-          relative(rootPath, join(dirPath, entry.name)),
-          ignorePatterns,
-          { nocase: true, dot: true }
+    let filteredEntries = entries;
+
+    if (omitExcluded) {
+      filteredEntries = entries
+        .filter((entry) =>
+          !shouldIgnore(
+            relative(rootPath, join(dirPath, entry.name)),
+            ignorePatterns,
+            { nocase: true, dot: true }
+          )
         )
-      )
-      .filter((entry) =>
-        includePatterns.length === 0 ||
-        includePatterns.some((p) =>
-          miniMatch(relative(rootPath, join(dirPath, entry.name)), p, {
-            nocase: true,
-            dot:    true,
-          })
-        )
-      );
+        .filter((entry) =>
+          includePatterns.length === 0 ||
+          includePatterns.some((p) =>
+            miniMatch(relative(rootPath, join(dirPath, entry.name)), p, {
+              nocase: true,
+              dot:    true,
+            })
+          )
+        );
+    }
 
     filteredEntries.forEach((entry, index) => {
       if (result.content.length > CHUNK_SIZE) {
@@ -632,7 +644,8 @@ const generateDirectoryTree = (
           `${prefix}${isLast ? '    ' : '│   '}`,
           rootPath,
           result,
-          ultraQuiet
+          ultraQuiet,
+          omitExcluded
         );
       }
     });
@@ -660,6 +673,7 @@ const generateDirectoryTree = (
  * @param {string|null} args.includeFile - Path to the include file.
  * @param {boolean} args.quiet - Whether quiet mode is enabled.
  * @param {boolean} args.ultraQuiet - Whether ultra-quiet mode is enabled.
+ * @param {boolean} args.omitExcluded - Whether to omit excluded files from the tree.
  * @throws {Error} If any argument is invalid.
  */
 const validateArgs = (args) => {
@@ -718,6 +732,7 @@ const generateSummary = (path, stats, options, outputFile) => {
     maxDepth,
     quiet,
     ultraQuiet,
+    omitExcluded,
   } = options;
 
   const executionTime   = Date.now() - stats.startTime;
@@ -747,6 +762,7 @@ ${invert(bold(' Configuration '))}
 ${white('Max file size:')}       ${yellow(formatBytes(maxFileSize))}
 ${white('Max total size:')}      ${yellow(formatBytes(maxTotalSize))}
 ${white('Max directory depth:')} ${yellow(maxDepth)}
+${white('Omit excluded from tree:')} ${omitExcluded ? green('Yes') : red('No')}
 ${bold('Ignore patterns that matched:')} ${
     stats.matchedIgnorePatterns.size
       ? `\n  ${gray(Array.from(stats.matchedIgnorePatterns).join('\n  '))}`
@@ -789,6 +805,7 @@ const parseArgs = () => {
     maxDepth:        MAX_DIRECTORY_DEPTH,
     quiet:           false,
     ultraQuiet:      false,
+    omitExcluded:    false,
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -805,6 +822,7 @@ const parseArgs = () => {
       case '--max-depth':       parsedArgs.maxDepth        = parseInt(args[++i], 10); break;
       case '--quiet':           parsedArgs.quiet           = true; break;
       case '--ultra-quiet':     parsedArgs.ultraQuiet      = true; break;
+      case '--omit-excluded':   parsedArgs.omitExcluded    = true; break;
       case '--help':            printHelp(); process.exit(0);
 
       // Short options
@@ -832,7 +850,7 @@ const parseArgs = () => {
  */
 const printHelp = () => {
   console.log(`
-Usage: node CodeDigest.js [options]
+Usage: node codedigest.mjs [options]
 
 Options:
   --path <path>, -p <path>             Directory to process (default: current directory)
@@ -846,25 +864,29 @@ Options:
   --max-size <bytes>, -s <bytes>       Maximum file size (default: ${formatBytes(MAX_FILE_SIZE)})
   --max-total-size <bytes>, -t <bytes> Maximum total size (default: ${formatBytes(MAX_TOTAL_SIZE_BYTES)})
   --max-depth <number>, -d <number>    Maximum directory depth (default: ${MAX_DIRECTORY_DEPTH})
+  --omit-excluded                      Omit excluded files from the directory tree
   --quiet, -q                          Suppress 'Added' and 'Skipped' messages
   --ultra-quiet, -uq                   Suppress all non-error output
   --help, -h                           Display this help message
 
 Examples:
   # Basic usage with default options
-  node CodeDigest.js
+  node codedigest.mjs
 
   # Specify a directory and output file
-  node CodeDigest.js --path ./myproject --output mydigest.txt
+  node codedigest.mjs --path ./myproject --output mydigest.txt
 
   # Use ignore patterns from a file and add additional ignore patterns via command line
-  node CodeDigest.js --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
+  node codedigest.mjs --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
 
   # Use include patterns to only include specific file types
-  node CodeDigest.js --include '*.js' --include '*.md'
+  node codedigest.mjs --include '*.js' --include '*.md'
 
   # Combine include and ignore patterns
-  node CodeDigest.js -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
+  node codedigest.mjs -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
+
+  # Omit excluded files from the directory tree
+  node codedigest.mjs --omit-excluded
   `);
 };
 
@@ -924,6 +946,7 @@ const main = async () => {
       rootPath:     rootPath,
       quiet:        args.quiet,
       ultraQuiet:   args.ultraQuiet,
+      omitExcluded: args.omitExcluded,
     };
 
     const statsObj = createStats();
@@ -943,7 +966,8 @@ const main = async () => {
       '',
       rootPath,
       { content: '', truncated: false },
-      args.ultraQuiet
+      args.ultraQuiet,
+      args.omitExcluded
     );
 
     const summary = generateSummary(args.path, statsObj, options, args.outputFile);
