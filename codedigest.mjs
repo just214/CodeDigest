@@ -2,12 +2,21 @@
 
 /**
  * codedigest.mjs - A Node.js script to generate a digest of a directory's structure and file contents.
- *
- * @module codedigest.mjs
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, lstatSync, readdirSync, readlinkSync, openSync, readSync, closeSync } from 'node:fs';
-import { join, extname, dirname, relative, resolve, sep, normalize } from 'node:path';
+import {
+  readFileSync, writeFileSync, existsSync, mkdirSync,
+  lstatSync, readdirSync, readlinkSync, openSync,
+  readSync, closeSync
+} from 'node:fs';
+
+import {
+  join, extname, dirname, relative, resolve, sep, normalize
+} from 'node:path';
+
+////////////////////////////////////////////////////////////////////////////////
+// Constants
+////////////////////////////////////////////////////////////////////////////////
 
 const MAX_FILE_SIZE        = 10 * 1024 * 1024;  // 10 MB
 const MAX_DIRECTORY_DEPTH  = 20;
@@ -15,9 +24,7 @@ const MAX_TOTAL_SIZE_BYTES = 500 * 1024 * 1024; // 500 MB
 const CHUNK_SIZE           = 1024 * 1024;       // 1 MB
 
 /**
- * Default patterns to ignore (exclude).
- *
- * @type {Set<string>}
+ * Default gitignore-style patterns to exclude.
  */
 const DEFAULT_IGNORE_PATTERNS = new Set([
   '*.pyc',           '*.pyo',           '*.pyd',           '__pycache__',     '.pytest_cache',
@@ -49,7 +56,7 @@ const DEFAULT_IGNORE_PATTERNS = new Set([
 ]);
 
 /**
- * ANSI escape codes for formatting.
+ * ANSI escape codes for formatting console output.
  */
 const FORMAT = {
   bold:   (text) => `\x1b[1m${text}\x1b[0m`,
@@ -61,6 +68,10 @@ const FORMAT = {
   invert: (text) => `\x1b[7m${text}\x1b[27m`,
 };
 
+////////////////////////////////////////////////////////////////////////////////
+// Types
+////////////////////////////////////////////////////////////////////////////////
+
 /**
  * @typedef {Object} FileInfo
  * @property {string} path - The relative path of the file.
@@ -69,219 +80,285 @@ const FORMAT = {
  */
 
 /**
+ * @typedef {Object} GitIgnoreRule
+ * @property {string[]} segments
+ * @property {boolean} negated
+ * @property {boolean} directoryOnly
+ * @property {boolean} anchored
+ */
+
+/**
  * @typedef {Object} ProcessingStats
- * @property {number} totalSize - The total size of processed files in bytes.
- * @property {number} fileCount - The number of files processed.
- * @property {Set<string>} seenPaths - A set of resolved paths to detect circular references.
- * @property {Set<string>} seenSymlinks - A set of "entry:target" symlink pairs to detect circular symlinks.
- * @property {Array<{timestamp: string, message: string, stack?: string}>} errors - An array of error objects.
- * @property {number} skippedFiles - The number of files skipped due to exceeding maxFileSize.
- * @property {number} filteredFiles - The number of files filtered out by include/exclude patterns.
- * @property {number} nonTextFiles - The number of files excluded because they are not text files.
- * @property {boolean} sizeLimitReached - Indicates if the total size limit was reached.
- * @property {number} startTime - Timestamp of the start of processing.
- * @property {Set<string>} matchedIgnorePatterns - Set of ignore patterns that matched at least one file/directory.
- * @property {Set<string>} matchedIncludePatterns - Set of include patterns that matched at least one file/directory.
- * @property {Object<string, number>} extensionSizes -  Object to track size per file extension.
+ * @property {number} totalSize
+ * @property {number} fileCount
+ * @property {Set<string>} seenPaths
+ * @property {Set<string>} seenSymlinks
+ * @property {Array<{timestamp: string, message: string, stack?: string}>} errors
+ * @property {number} skippedFiles
+ * @property {number} filteredFiles
+ * @property {number} nonTextFiles
+ * @property {boolean} sizeLimitReached
+ * @property {number} startTime
+ * @property {Set<string>} matchedIgnorePatterns
+ * @property {Set<string>} matchedIncludePatterns
+ * @property {Object<string, number>} extensionSizes
+ * @property {(e: Error) => void} addError
  */
 
 /**
  * @typedef {Object} ProcessingOptions
- * @property {string[]} ignorePatterns - Patterns of files and directories to ignore (exclude).
- * @property {string[]} includePatterns - Patterns of files and directories to include.
- * @property {number} maxFileSize - Maximum file size to process.
- * @property {number} maxTotalSize - Maximum total size of files to process.
- * @property {number} maxDepth - Maximum directory traversal depth.
- * @property {string} rootPath - The absolute path of the root directory being processed.
- * @property {boolean} quiet - Whether to suppress Added and Skipped messages.
- * @property {boolean} ultraQuiet - Whether to suppress all non-error output.
+ * @property {GitIgnoreRule[]} ignoreRules
+ * @property {GitIgnoreRule[]} includeRules
+ * @property {number} maxFileSize
+ * @property {number} maxTotalSize
+ * @property {number} maxDepth
+ * @property {string} rootPath
+ * @property {boolean} quiet
+ * @property {boolean} ultraQuiet
+ * @property {number} [currentDepth]
  */
 
-/**
- * Creates a new ProcessingStats object.
- *
- * @returns {ProcessingStats} A new ProcessingStats object.
- */
-const createStats = () => ({
-  totalSize:             0,
-  fileCount:             0,
-  seenPaths:             new Set(),
-  seenSymlinks:          new Set(),
-  errors:                [],
-  skippedFiles:          0,
-  filteredFiles:         0,
-  nonTextFiles:          0,
-  sizeLimitReached:      false,
-  startTime:             Date.now(),
-  matchedIgnorePatterns: new Set(),
-  matchedIncludePatterns: new Set(),
-  extensionSizes:        {}, // Initialize extensionSizes here
-  /**
-   * Adds an error to the errors array.
-   *
-   * @param {Error} error - The error object to add.
-   */
-  addError(error) {
-    this.errors.push({
-      timestamp: new Date().toISOString(),
-      message:   error.message,
-      stack:     error.stack,
-    });
-  },
-});
+////////////////////////////////////////////////////////////////////////////////
+// Parsing Gitignore-Style Patterns
+////////////////////////////////////////////////////////////////////////////////
 
-/**
- * Matches a file path against a glob pattern (simple mini-implementation).
- *
- * @param {string} path - The file path to match.
- * @param {string} pattern - The glob pattern to match against.
- * @param {Object} [opts={}] - Options for matching.
- * @returns {boolean} True if the path matches the pattern, false otherwise.
- */
-function miniMatch(path, pattern, opts = {}) {
-  try {
-    if (!pattern || typeof pattern !== 'string') {
-      console.warn(`Invalid pattern: ${pattern}`);
-      return false;
+function splitIntoSegments(pattern) {
+  let segments = [];
+  let current  = '';
+  let escaped  = false;
+
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+
+    if (!escaped && ch === '\\') {
+      escaped = true;
+      continue;
     }
 
-    const options         = { nocase: false, dot: false, ...opts };
-    const { nocase, dot, matchBase } = options;
-
-    // Escape special regex chars
-    const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-    let pat = pattern;
-    let neg = false;
-    if (pat.startsWith('!')) {
-      neg = true;
-      pat = pat.slice(1);
-    }
-
-    const parts     = pat.split(sep);
-    const pathParts = path.split(sep);
-
-    // Matches a single path component
-    const matchPart = (pathPart, patPart) => {
-      if (patPart === '**') return true;
-      const regexStr = patPart.split('*').map(escapeRegExp).join('.*');
-      const regex    = new RegExp(`^${regexStr}$`, nocase ? 'i' : '');
-      return regex.test(pathPart);
-    };
-
-    // If dot=false, skip hidden files unless the pattern explicitly has a dot
-    if (!dot && path.split('/').some((part) => part.startsWith('.'))) {
-      if (!pat.split('/').some((part) => part.startsWith('.'))) {
-        return false;
+    if (!escaped && ch === '/') {
+      if (current.length > 0) {
+        segments.push(current);
       }
+      current = '';
+      continue;
     }
 
-    // Recursive matching
-    const match = (pathParts, patParts) => {
-      if (patParts.length === 0) return pathParts.length === 0;
-      if (patParts[0] === '**') {
-        if (patParts.length === 1) return true;
-        for (let i = 0; i <= pathParts.length; i++) {
-          if (match(pathParts.slice(i), patParts.slice(1))) return true;
-        }
-        return false;
-      }
-      if (pathParts.length === 0 || !matchPart(pathParts[0], patParts[0])) return false;
-      return match(pathParts.slice(1), patParts.slice(1));
-    };
-
-    let result = match(pathParts, parts);
-
-    if (opts.matchBase) {
-      // Check if any part of the path matches the pattern
-      for (let i = 0; i < pathParts.length; i++) {
-        if (match([pathParts[i]], parts)) {
-          result = true;
-          break;
-        }
-      }
-    }
-
-    return neg ? !result : result;
-  } catch (error) {
-    console.error(`Error in pattern matching: ${error.message}`);
-    return false;
+    current += ch;
+    escaped = false;
   }
+
+  if (current.length > 0) {
+    segments.push(current);
+  }
+
+  return segments;
 }
 
-/**
- * Checks if a path should be excluded based on the given ignore patterns, with "last pattern wins".
- *
- * @param {string} path - The path to check (normalized with forward slashes).
- * @param {string[]} ignorePatterns - The patterns to ignore (exclude).
- * @param {Object} minimatchOptions - Options for matching.
- * @param {ProcessingStats} [stats] - For tracking matched patterns.
- * @returns {boolean} True if the path should be excluded, false otherwise.
- */
-const shouldExclude = (path, ignorePatterns, minimatchOptions, stats) => {
-  const normalizedPath = normalize(path).split(sep).join('/');
+function parseGitignore(text) {
+  const lines = text.split(/\r?\n/);
+  const rules = [];
 
-  let shouldBeExcluded = false;
+  outerLoop:
+  for (let rawLine of lines) {
+    let line = rawLine.trim();
+    if (!line || line.startsWith('#')) {
+      continue outerLoop; // skip blank or comment lines
+    }
 
-  for (const pattern of ignorePatterns) {
-    const isNegated     = pattern.startsWith('!');
-    const actualPattern = isNegated ? pattern.slice(1) : pattern;
+    let negated = false;
+    if (line.startsWith('!')) {
+      negated = true;
+      line = line.slice(1);
+    }
 
-    const match = miniMatch(normalizedPath, actualPattern, {
-      ...minimatchOptions,
-      matchBase: !actualPattern.includes('/'),
+    let anchored = false;
+    if (line.startsWith('/')) {
+      anchored = true;
+      line = line.slice(1);
+    }
+
+    let directoryOnly = false;
+    if (line.endsWith('/')) {
+      directoryOnly = true;
+      line = line.slice(0, -1);
+    }
+
+    const segments = splitIntoSegments(line);
+
+    rules.push({
+      segments,
+      negated,
+      directoryOnly,
+      anchored,
     });
+  }
 
-    if (match) {
-      shouldBeExcluded = !isNegated;
-      // Track which pattern caused exclusion
-      if (!isNegated && stats) {
-        stats.matchedIgnorePatterns.add(pattern);
-      }
-      // "Last pattern wins," so keep evaluating
+  return rules;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Matching Logic
+////////////////////////////////////////////////////////////////////////////////
+
+/**
+ * "Last match wins": Return true if final match => non-negated, otherwise false.
+ */
+function matchPathByRules(filePath, rules, stats, matchedSetName) {
+  const pathSegments = filePath.split('/').filter(Boolean);
+  let matched = false;
+  let matchedRule = null;
+
+  for (const rule of rules) {
+    if (matchesRule(pathSegments, rule)) {
+      matched = !rule.negated;
+      matchedRule = rule;
     }
   }
 
-  return shouldBeExcluded;
-};
+  if (matched && matchedRule && stats && matchedSetName) {
+    const original = reconstructPattern(matchedRule);
+    stats[matchedSetName].add(original);
+  }
+  return matched;
+}
 
-/**
- * Checks if a path is included by at least one of the includePatterns (or if no patterns, everything is included).
- *
- * @param {string} path - The path (normalized) to check.
- * @param {string[]} includePatterns - The patterns to include.
- * @param {ProcessingStats} stats - For tracking matched patterns.
- * @returns {boolean} True if included, false otherwise.
- */
-function isIncludedByPatterns(path, includePatterns, stats) {
-  // If there are no include patterns, everything is included by default
-  if (!includePatterns.length) return true;
-
-  const normalizedPath = normalize(path).split(sep).join('/');
-  for (const pattern of includePatterns) {
-    if (
-      miniMatch(normalizedPath, pattern, {
-        nocase: true,
-        dot: true,
-        matchBase: !pattern.includes('/'),
-      })
-    ) {
-      // Track the pattern that matched
-      stats.matchedIncludePatterns.add(pattern);
+function matchesRule(pathSegments, rule) {
+  if (rule.anchored) {
+    return matchSegments(pathSegments, 0, rule.segments, 0, rule.directoryOnly);
+  }
+  for (let start = 0; start <= pathSegments.length; start++) {
+    if (matchSegments(pathSegments, start, rule.segments, 0, rule.directoryOnly)) {
       return true;
     }
   }
   return false;
 }
 
+function matchSegments(pathSegs, pIndex, patSegs, sIndex, directoryOnly) {
+  if (sIndex === patSegs.length) {
+    if (directoryOnly) {
+      return pIndex < pathSegs.length;
+    }
+    return true;
+  }
+
+  if (pIndex === pathSegs.length) {
+    // only match if remaining pattern is all '**'
+    for (let i = sIndex; i < patSegs.length; i++) {
+      if (patSegs[i] !== '**') {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  const token = patSegs[sIndex];
+  if (token === '**') {
+    // zero or more
+    if (matchSegments(pathSegs, pIndex, patSegs, sIndex + 1, directoryOnly)) {
+      return true;
+    }
+    for (let skip = pIndex; skip < pathSegs.length; skip++) {
+      if (matchSegments(pathSegs, skip + 1, patSegs, sIndex, directoryOnly)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // single-segment match
+  if (!segmentMatch(pathSegs[pIndex], token)) {
+    return false;
+  }
+
+  return matchSegments(pathSegs, pIndex + 1, patSegs, sIndex + 1, directoryOnly);
+}
+
+function segmentMatch(pathSegment, patternSegment) {
+  let regexStr = '';
+  for (let i = 0; i < patternSegment.length; i++) {
+    const ch = patternSegment[i];
+    if (ch === '*') {
+      regexStr += '[^/]*';
+    } else if (ch === '?') {
+      regexStr += '[^/]';
+    } else {
+      regexStr += escapeRegex(ch);
+    }
+  }
+  const re = new RegExp(`^${regexStr}$`);
+  return re.test(pathSegment);
+}
+
+function escapeRegex(ch) {
+  return ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function reconstructPattern(rule) {
+  let p = rule.segments.map(s => s.replace(/\\/g, '\\\\').replace(/\//g, '\\/')).join('/');
+  if (rule.directoryOnly) p += '/';
+  if (rule.anchored) p = '/' + p;
+  if (rule.negated) p = '!' + p;
+  return p;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Include & Ignore Checking
+////////////////////////////////////////////////////////////////////////////////
+
 /**
- * Reads the content of a file, handling large files in chunks.
- *
- * @param {string} filePath - The path to the file.
- * @param {number} maxFileSize - The maximum file size allowed.
- * @returns {string} The content of the file or a message (if too large or error).
+ * Return true if the path matches the ignoreRules (i.e. "excluded").
  */
-const readFileContent = (filePath, maxFileSize) => {
+function isPathExcluded(filePath, ignoreRules, stats) {
+  return matchPathByRules(filePath, ignoreRules, stats, 'matchedIgnorePatterns');
+}
+
+/**
+ * Return true if the path matches the includeRules (i.e. "included").
+ * If no includeRules, everything is included by default.
+ */
+function isPathIncluded(filePath, includeRules, stats) {
+  if (!includeRules || includeRules.length === 0) {
+    return true;
+  }
+  return matchPathByRules(filePath, includeRules, stats, 'matchedIncludePatterns');
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Stats
+////////////////////////////////////////////////////////////////////////////////
+
+function createStats() {
+  return {
+    totalSize:             0,
+    fileCount:             0,
+    seenPaths:             new Set(),
+    seenSymlinks:          new Set(),
+    errors:                [],
+    skippedFiles:          0,
+    filteredFiles:         0,
+    nonTextFiles:          0,
+    sizeLimitReached:      false,
+    startTime:             Date.now(),
+    matchedIgnorePatterns: new Set(),
+    matchedIncludePatterns: new Set(),
+    extensionSizes:        {},
+
+    addError(error) {
+      this.errors.push({
+        timestamp: new Date().toISOString(),
+        message:   error.message,
+        stack:     error.stack,
+      });
+    },
+  };
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// File & Symlink Handling
+////////////////////////////////////////////////////////////////////////////////
+
+function readFileContent(filePath, maxFileSize) {
   try {
     const stats = lstatSync(filePath);
 
@@ -313,15 +390,9 @@ const readFileContent = (filePath, maxFileSize) => {
   } catch (error) {
     return `Error reading file: ${error.message}`;
   }
-};
+}
 
-/**
- * Determines if a file is likely a text file based on its extension or checking for null bytes.
- *
- * @param {string} filePath - The path to the file.
- * @returns {boolean} True if likely a text file, false otherwise.
- */
-const isTextFile = (filePath) => {
+function isTextFile(filePath) {
   const textExtensions = new Set([
     '.txt',  '.md',   '.py',  '.js',   '.java', '.c',   '.cpp',  '.h',   '.hpp',
     '.cs',   '.go',   '.rs',  '.swift', '.rb',   '.php', '.html', '.css',
@@ -336,77 +407,23 @@ const isTextFile = (filePath) => {
 
   try {
     const buffer = readFileSync(filePath, { encoding: 'utf8', flag: 'r' });
-    // If it contains a null char, it's likely binary
     return !buffer.includes('\0');
   } catch (error) {
     console.error(`Error checking if file is text: ${error.message}`);
     return false;
   }
-};
+}
 
-/**
- * Formats a number of bytes into a human-readable string.
- *
- * @param {number} bytes - The number of bytes.
- * @param {number} [decimals=2] - Decimal places to use.
- * @returns {string} The formatted string.
- */
-const formatBytes = (bytes, decimals = 2) => {
+function formatBytes(bytes, decimals = 2) {
   if (bytes === 0) return '0 Bytes';
   const k     = 1024;
   const dm    = decimals < 0 ? 0 : decimals;
   const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
   const i     = Math.floor(Math.log(bytes) / Math.log(k));
   return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
-};
+}
 
-/**
- * Processes a symbolic link.
- *
- * @param {string} entryPath - The path to the symbolic link.
- * @param {string} targetPath - The target path of the symbolic link.
- * @param {ProcessingStats} stats - The processing statistics.
- * @param {FileInfo[]} files - Accumulates file info.
- * @param {ProcessingOptions} options - The processing options.
- * @returns {FileInfo[]} An array of file info from the target.
- */
-const processSymlink = (entryPath, targetPath, stats, files, options) => {
-  const symlinkKey = `${entryPath}:${targetPath}`;
-  if (stats.seenSymlinks.has(symlinkKey)) {
-    if (!options.ultraQuiet) {
-      console.warn(`Circular symlink detected: ${entryPath} -> ${targetPath}`);
-    }
-    return [];
-  }
-  stats.seenSymlinks.add(symlinkKey);
-
-  try {
-    const targetStat = lstatSync(targetPath);
-    if (targetStat.isDirectory()) {
-      return processDirectory(targetPath, options, stats);
-    } else {
-      processFile(targetPath, options.maxFileSize, stats, files, options.rootPath, options);
-      return [];
-    }
-  } catch (err) {
-    if (!options.ultraQuiet) {
-      console.warn(`Broken symlink or permission error: ${entryPath} -> ${targetPath}`);
-    }
-    return [];
-  }
-};
-
-/**
- * Processes a single file.
- *
- * @param {string} filePath - The path to the file.
- * @param {number} maxFileSize - The maximum file size allowed.
- * @param {ProcessingStats} stats - The processing statistics.
- * @param {FileInfo[]} files - Accumulates file info.
- * @param {string} rootPath - The absolute path of the root directory.
- * @param {ProcessingOptions} options - The processing options.
- */
-const processFile = (filePath, maxFileSize, stats, files, rootPath, options) => {
+function processFile(filePath, maxFileSize, stats, files, rootPath, options) {
   try {
     const fileSize = lstatSync(filePath).size;
 
@@ -437,8 +454,7 @@ const processFile = (filePath, maxFileSize, stats, files, rootPath, options) => 
     stats.totalSize += fileSize;
     stats.fileCount++;
 
-    // Calculate extension sizes
-    const ext = extname(filePath).toLowerCase().slice(1); // Get extension without '.'
+    const ext = extname(filePath).toLowerCase().slice(1);
     stats.extensionSizes[ext] = (stats.extensionSizes[ext] || 0) + fileSize;
 
     const relativePath = relative(rootPath, filePath);
@@ -451,30 +467,47 @@ const processFile = (filePath, maxFileSize, stats, files, rootPath, options) => 
     if (!options.quiet && !options.ultraQuiet) {
       console.log(`${FORMAT.bold('Added to digest:')} ${relativePath}`);
     }
-
   } catch (error) {
     stats.addError(error);
     console.error(`Error processing file ${filePath}: ${error.message}`);
   }
-};
+}
 
-/**
- * Processes a directory recursively, applying include/exclude rules.
- *
- * Logic:
- * 1. Include Check: Only process files/directories that match at least one include pattern (if include patterns are provided).
- * 2. Exclude Check: From the included items, exclude those that match any ignore pattern.
- *
- * @param {string} dirPath - The path to the directory.
- * @param {ProcessingOptions} options - The processing options.
- * @param {ProcessingStats} stats - The processing statistics.
- * @returns {FileInfo[]} An array of file information.
- */
-const processDirectory = (
+function processSymlink(entryPath, targetPath, stats, files, options) {
+  const symlinkKey = `${entryPath}:${targetPath}`;
+  if (stats.seenSymlinks.has(symlinkKey)) {
+    if (!options.ultraQuiet) {
+      console.warn(`Circular symlink detected: ${entryPath} -> ${targetPath}`);
+    }
+    return [];
+  }
+  stats.seenSymlinks.add(symlinkKey);
+
+  try {
+    const targetStat = lstatSync(targetPath);
+    if (targetStat.isDirectory()) {
+      return processDirectory(targetPath, options, stats);
+    } else {
+      processFile(targetPath, options.maxFileSize, stats, files, options.rootPath, options);
+      return [];
+    }
+  } catch (err) {
+    if (!options.ultraQuiet) {
+      console.warn(`Broken symlink or permission error: ${entryPath} -> ${targetPath}`);
+    }
+    return [];
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Directory Processing (Always Recurse, Only Apply Includes to Files)
+////////////////////////////////////////////////////////////////////////////////
+
+function processDirectory(
   dirPath,
   {
-    ignorePatterns,
-    includePatterns,
+    ignoreRules,
+    includeRules,
     maxFileSize     = MAX_FILE_SIZE,
     maxTotalSize    = MAX_TOTAL_SIZE_BYTES,
     maxDepth        = MAX_DIRECTORY_DEPTH,
@@ -484,7 +517,7 @@ const processDirectory = (
     ultraQuiet,
   },
   stats = createStats()
-) => {
+) {
   /** @type {FileInfo[]} */
   const files = [];
 
@@ -504,480 +537,427 @@ const processDirectory = (
   }
   stats.seenPaths.add(resolvedPath);
 
+  let entries = [];
   try {
-    const entries = readdirSync(dirPath, { withFileTypes: true });
-
-    for (const entry of entries) {
-      if (stats.sizeLimitReached) {
-        break;
-      }
-
-      const entryPath         = join(dirPath, entry.name);
-      const relativeEntryPath = relative(rootPath, entryPath);
-      const normalizedPath    = normalize(relativeEntryPath).split(sep).join('/');
-
-
-      // --- 1. Include check ---
-      if (!isIncludedByPatterns(normalizedPath, includePatterns, stats)) {
-        stats.filteredFiles++;
-        continue;
-      }
-
-      // --- 2. Exclude check ---
-      if (
-        shouldExclude(
-          normalizedPath,
-          ignorePatterns,
-          { nocase: true, dot: true },
-          stats
-        )
-      ) {
-        stats.filteredFiles++;
-        continue;
-      }
-
-
-      // If we get here, it's included and not excluded
-      if (entry.isSymbolicLink()) {
-        try {
-          const targetPath = resolve(dirname(entryPath), readlinkSync(entryPath));
-          const symlinks = processSymlink(entryPath, targetPath, stats, files, {
-            ignorePatterns,
-            includePatterns,
-            maxFileSize,
-            maxTotalSize,
-            maxDepth,
-            currentDepth: currentDepth + 1,
-            rootPath,
-            quiet,
-            ultraQuiet,
-          });
-          files.push(...symlinks);
-        } catch (error) {
-          stats.addError(error);
-          if (!ultraQuiet) {
-            console.error(`Error processing symlink ${entryPath}: ${error.message}`);
-          }
-        }
-      } else if (entry.isDirectory()) {
-        const subFiles = processDirectory(
-          entryPath,
-          {
-            ignorePatterns,
-            includePatterns,
-            maxFileSize,
-            maxTotalSize,
-            maxDepth,
-            currentDepth: currentDepth + 1,
-            rootPath,
-            quiet,
-            ultraQuiet,
-          },
-          stats
-        );
-        files.push(...subFiles);
-      } else if (entry.isFile()) {
-        processFile(entryPath, maxFileSize, stats, files, rootPath, {
-          quiet,
-          ultraQuiet,
-        });
-      }
-    }
+    entries = readdirSync(dirPath, { withFileTypes: true });
   } catch (error) {
     stats.addError(error);
     if (!ultraQuiet) {
       console.error(`Error reading directory ${dirPath}: ${error.message}`);
     }
+    return files;
+  }
+
+  for (const entry of entries) {
+    if (stats.sizeLimitReached) {
+      break;
+    }
+
+    const entryPath = join(dirPath, entry.name);
+    const relativePath = relative(rootPath, entryPath);
+    const forwardSlashed = normalize(relativePath).split(sep).join('/');
+
+    // First, check if ignored
+    if (isPathExcluded(forwardSlashed, ignoreRules, stats)) {
+      stats.filteredFiles++;
+      continue;
+    }
+
+    // If it's a symlink, handle symlink logic
+    if (entry.isSymbolicLink()) {
+      try {
+        const targetPath = resolve(dirname(entryPath), readlinkSync(entryPath));
+        const symlinked = processSymlink(entryPath, targetPath, stats, files, {
+          ignoreRules,
+          includeRules,
+          maxFileSize,
+          maxTotalSize,
+          maxDepth,
+          currentDepth: currentDepth + 1,
+          rootPath,
+          quiet,
+          ultraQuiet,
+        });
+        files.push(...symlinked);
+      } catch (error) {
+        stats.addError(error);
+        if (!ultraQuiet) {
+          console.error(`Error processing symlink ${entryPath}: ${error.message}`);
+        }
+      }
+      continue;
+    }
+
+    // If it's a directory, always recurse unless it's ignored
+    if (entry.isDirectory()) {
+      const subFiles = processDirectory(
+        entryPath,
+        {
+          ignoreRules,
+          includeRules,
+          maxFileSize,
+          maxTotalSize,
+          maxDepth,
+          currentDepth: currentDepth + 1,
+          rootPath,
+          quiet,
+          ultraQuiet,
+        },
+        stats
+      );
+      files.push(...subFiles);
+      continue;
+    }
+
+    // If it's a file, now check if included
+    if (!isPathIncluded(forwardSlashed, includeRules, stats)) {
+      stats.filteredFiles++;
+      continue;
+    }
+
+    // If we get here, it's a file that is not ignored and is included => process it
+    processFile(entryPath, maxFileSize, stats, files, rootPath, {
+      quiet,
+      ultraQuiet,
+    });
   }
 
   return files;
-};
+}
 
-/**
- * Generates a tree-like directory structure string.
- *
- * @param {string} dirPath - The path to the directory.
- * @param {string[]} ignorePatterns - The patterns to ignore (exclude).
- * @param {string[]} includePatterns - The patterns to include.
- * @param {number} maxDepth - Maximum recursion depth for the tree.
- * @param {number} [currentDepth=0] - Current depth.
- * @param {string} [prefix=''] - Indentation prefix.
- * @param {string} [rootPath=dirPath] - The root path.
- * @param {{ content: string, truncated: boolean }} [result={ content: '', truncated: false }]
- * @param {boolean} ultraQuiet - Whether to suppress all non-error output.
- * @returns {string} The directory tree string.
- */
-const generateDirectoryTree = (
+////////////////////////////////////////////////////////////////////////////////
+// Directory Tree
+////////////////////////////////////////////////////////////////////////////////
+
+function generateDirectoryTree(
   dirPath,
-  ignorePatterns,
-  includePatterns,
+  ignoreRules,
+  includeRules,
   maxDepth,
   currentDepth = 0,
-  prefix       = '',
-  rootPath     = dirPath,
-  result       = { content: '', truncated: false },
-  ultraQuiet   = false
-) => {
+  prefix = '',
+  rootPath = dirPath,
+  result = { content: '', truncated: false },
+  ultraQuiet = false
+) {
   if (currentDepth > maxDepth || result.truncated) {
     return result.content;
   }
 
+  let entries = [];
   try {
-    const entries = readdirSync(dirPath, { withFileTypes: true });
-    let filteredEntries = entries;
-
-    // Always omit excluded items
-    filteredEntries = entries.filter((entry) => {
-      const relPath = relative(rootPath, join(dirPath, entry.name));
-      const norm    = normalize(relPath).split(sep).join('/');
-      // Exclude if it's ignored
-      if (shouldExclude(norm, ignorePatterns, { nocase: true, dot: true })) {
-        return false;
-      }
-      // Exclude if it fails includes
-      return isIncludedByPatterns(norm, includePatterns, /* stats = */ null);
-    });
-
-    filteredEntries.forEach((entry, index) => {
-      if (result.content.length > CHUNK_SIZE) {
-        result.truncated = true;
-        return;
-      }
-
-      const isLast    = index === filteredEntries.length - 1;
-      const entryPath = join(dirPath, entry.name);
-
-      result.content += `${prefix}${isLast ? '└── ' : '├── '}${entry.name}${entry.isDirectory() ? '/' : ''}\n`;
-
-      if (entry.isDirectory() && !result.truncated) {
-        generateDirectoryTree(
-          entryPath,
-          ignorePatterns,
-          includePatterns,
-          maxDepth,
-          currentDepth + 1,
-          `${prefix}${isLast ? '    ' : '│   '}`,
-          rootPath,
-          result,
-          ultraQuiet
-        );
-      }
-    });
+    entries = readdirSync(dirPath, { withFileTypes: true });
   } catch (error) {
     if (!ultraQuiet) {
       console.error(`Error generating directory tree for ${dirPath}: ${error.message}`);
     }
+    return result.content;
   }
+
+  // We use a similar approach:
+  // - Skip if path is excluded, but always show directories (unless excluded).
+  // - Only show file if it's included.
+  const filtered = entries.filter((entry) => {
+    const relPath = relative(rootPath, join(dirPath, entry.name));
+    const fwd = normalize(relPath).split(sep).join('/');
+
+    // If ignored, skip
+    if (isPathExcluded(fwd, ignoreRules, null)) {
+      return false;
+    }
+
+    // If directory, we keep it in the tree for traversal
+    if (entry.isDirectory() || entry.isSymbolicLink()) {
+      return true;
+    }
+
+    // If a file, we also check isPathIncluded
+    return isPathIncluded(fwd, includeRules, null);
+  });
+
+  filtered.forEach((entry, index) => {
+    if (result.content.length > CHUNK_SIZE) {
+      result.truncated = true;
+      return;
+    }
+
+    const isLast = index === filtered.length - 1;
+    const entryPath = join(dirPath, entry.name);
+    const line = `${prefix}${isLast ? '└── ' : '├── '}${entry.name}${entry.isDirectory() ? '/' : ''}\n`;
+    result.content += line;
+
+    if (entry.isDirectory() && !result.truncated) {
+      generateDirectoryTree(
+        entryPath,
+        ignoreRules,
+        includeRules,
+        maxDepth,
+        currentDepth + 1,
+        `${prefix}${isLast ? '    ' : '│   '}`,
+        rootPath,
+        result,
+        ultraQuiet
+      );
+    }
+  });
 
   return result.truncated
     ? result.content + '\n[Directory tree truncated due to size]'
     : result.content;
-};
+}
 
-/**
- * Validates the command line arguments.
- *
- * @param {Object} args - The parsed command line arguments.
- * @throws {Error} If any argument is invalid.
- */
-const validateArgs = (args) => {
-  const errors = [];
+////////////////////////////////////////////////////////////////////////////////
+// Summary & Reporting
+////////////////////////////////////////////////////////////////////////////////
 
-  if (args.maxSize      <= 0) errors.push('maxSize must be positive');
-  if (args.maxTotalSize <= 0) errors.push('maxTotalSize must be positive');
-  if (args.maxDepth     <= 0) errors.push('maxDepth must be positive');
-
-  if (args.ignoreFile && !existsSync(args.ignoreFile)) {
-    errors.push(`Ignore file not found: ${args.ignoreFile}`);
-  }
-
-  if (args.includeFile && !existsSync(args.includeFile)) {
-    errors.push(`Include file not found: ${args.includeFile}`);
-  }
-
-  if (errors.length > 0) {
-    throw new Error(`Invalid arguments:\n${errors.join('\n')}`);
-  }
-};
-
-/**
- * Loads patterns from a file (one per line, ignoring # comments).
- *
- * @param {string} filePath - The path to the file.
- * @returns {string[]} An array of patterns.
- */
-const loadPatternsFromFile = (filePath) => {
-  try {
-    if (!filePath) return [];
-    const content = readFileSync(filePath, 'utf-8');
-    return content
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line !== '' && !line.startsWith('#'));
-  } catch (error) {
-    console.error(`Error reading patterns from ${filePath}: ${error.message}`);
-    return [];
-  }
-};
-
-/**
- * Calculates the percentage of file sizes per extension.
- *
- * @param {Object<string, number>} extensionSizes - Object containing extension sizes.
- * @param {number} totalSize - Total size of all processed files.
- * @returns {Object<string, number>} Object with extension percentages.
- */
-const calculateExtensionPercentages = (extensionSizes, totalSize) => {
+function calculateExtensionPercentages(extensionSizes, totalSize) {
   const percentages = {};
   for (const ext in extensionSizes) {
-    percentages[ext] = (totalSize > 0) ? (extensionSizes[ext] / totalSize) * 100 : 0;
+    percentages[ext] = totalSize > 0
+      ? (extensionSizes[ext] / totalSize) * 100
+      : 0;
   }
   return percentages;
-};
+}
 
-/**
- * Generates a simple text-based bar graph for file extension percentages.
- *
- * @param {Object<string, number>} extensionPercentages - Object with extension percentages.
- * @returns {string} Bar graph string.
- */
-const generateBarGraph = (extensionPercentages) => {
-  const barLength = 20; // Length of the bar
+function generateBarGraph(extensionPercentages) {
+  const { white, green } = FORMAT;
+  const barLength = 20;
   let graph = '';
-  const sortedExtensions = Object.entries(extensionPercentages)
-    .sort(([, percentA], [, percentB]) => percentB - percentA); // Sort by percentage descending
 
-  for (const [ext, percent] of sortedExtensions) {
+  const sorted = Object.entries(extensionPercentages)
+    .sort(([, a], [, b]) => b - a);
+
+  for (const [ext, percent] of sorted) {
     const filledBars = Math.round((percent / 100) * barLength);
     const emptyBars  = barLength - filledBars;
-    const bar        = '█'.repeat(filledBars) + '—'.repeat(emptyBars);
-    graph += `${FORMAT.white(ext.padEnd(12))}: ${FORMAT.green(bar)} ${percent.toFixed(1)}%\n`;
+    const bar        = '█'.repeat(filledBars) + '–'.repeat(emptyBars);
+    graph += `${white(ext.padEnd(12))}: ${green(bar)} ${percent.toFixed(1)}%\n`;
   }
   return graph;
-};
+}
 
-
-/**
- * Generates a summary of the processing results.
- *
- * @param {string} path - The path to the processed directory.
- * @param {ProcessingStats} stats - The processing statistics.
- * @param {ProcessingOptions} options - The processing options.
- * @param {string} outputFile - The path to the digest output file.
- * @returns {string} The summary string.
- */
-const generateSummary = (path, stats, options, outputFile) => {
-  const { includePatterns, maxFileSize, maxTotalSize, maxDepth } = options;
-
+function generateSummary(path, stats, options, outputFile) {
+  const { bold, red, green, yellow, white, gray, invert } = FORMAT;
   const executionTime = Date.now() - stats.startTime;
 
-  const { bold, red, green, yellow, white, gray, invert } = FORMAT;
-
-  const extensionPercentages = calculateExtensionPercentages(stats.extensionSizes, stats.totalSize);
-  const barGraph           = generateBarGraph(extensionPercentages);
+  const extensionPercentages = calculateExtensionPercentages(
+    stats.extensionSizes,
+    stats.totalSize
+  );
+  const barGraph = generateBarGraph(extensionPercentages);
 
   return `
 ${invert(bold(' Digest Summary '))}
 ${white('Processed directory:')}         ${gray(resolve(path))}
 ${white('Execution time:')}              ${yellow((executionTime / 1000).toFixed(2))} ${gray('seconds')}
-${white('Files added to digest:')}       ${green(stats.fileCount)}
-${white('Files excluded by pattern:')}   ${red(stats.filteredFiles)}
-${white('Files excluded (non-text):')}   ${red(stats.nonTextFiles)}
-${white('Files skipped (size limit):')}  ${red(stats.skippedFiles)}
+${white('Files added to digest:')}       ${green(stats.fileCount.toString())}
+${white('Files excluded by pattern:')}   ${red(stats.filteredFiles.toString())}
+${white('Files excluded (non-text):')}   ${red(stats.nonTextFiles.toString())}
+${white('Files skipped (size limit):')}  ${red(stats.skippedFiles.toString())}
 ${white('Total size:')}                  ${yellow(formatBytes(stats.totalSize))}
 ${white('Size limit reached:')}          ${stats.sizeLimitReached ? red('Yes') : green('No')}
 
 ${invert(bold(' Configuration '))}
-${white('Max file size:')}       ${yellow(formatBytes(maxFileSize))}
-${white('Max total size:')}      ${yellow(formatBytes(maxTotalSize))}
-${white('Max directory depth:')} ${yellow(maxDepth)}
+${white('Max file size:')}       ${yellow(formatBytes(options.maxFileSize))}
+${white('Max total size:')}      ${yellow(formatBytes(options.maxTotalSize))}
+${white('Max directory depth:')} ${yellow(options.maxDepth)}
+
 ${bold('Ignore patterns that matched:')} ${
     stats.matchedIgnorePatterns.size > 0
       ? `\n  ${gray(Array.from(stats.matchedIgnorePatterns).join('\n  '))}`
       : 'None'
 }
+
 ${bold('Include patterns that matched:')} ${
     stats.matchedIncludePatterns.size > 0
-      ? `\n ${gray(Array.from(stats.matchedIncludePatterns).join('\n  '))}`
+      ? `\n  ${gray(Array.from(stats.matchedIncludePatterns).join('\n  '))}`
       : 'None'
 }
 
 ${invert(bold(' File Size by Extension '))}
 ${barGraph}
+
 ${invert(bold(` Errors (${stats.errors.length}) `))}
 ${
     stats.errors.length
-      ? stats.errors
-          .map((err) => `${err.timestamp}: ${err.message}`)
-          .join('\n')
+      ? stats.errors.map((err) => `${err.timestamp}: ${err.message}`).join('\n')
       : 'No errors occurred'
 }
 
 ${invert(bold(' Digest File '))}
 ${outputFile}
 `;
-};
+}
 
-/**
- * Parses command line arguments.
- *
- * @returns {Object} The parsed arguments.
- */
-const parseArgs = () => {
-  const args = process.argv.slice(2);
-  const parsedArgs = {
-    path:                '.',
-    outputFile:          'digest.txt',
-    ignoreFile:          null,
-    includeFile:         null,
-    ignorePatterns:      [],
-    includePatterns:     [],
-    maxSize:             MAX_FILE_SIZE,
-    maxTotalSize:        MAX_TOTAL_SIZE_BYTES,
-    maxDepth:            MAX_DIRECTORY_DEPTH,
-    quiet:               false,
-    ultraQuiet:          false,
-    skipDefaultIgnore:   false,
-  };
+////////////////////////////////////////////////////////////////////////////////
+// CLI & Main
+////////////////////////////////////////////////////////////////////////////////
 
-  for (let i = 0; i < args.length; i++) {
-    switch (args[i]) {
-      // Long options
-      case '--path':              parsedArgs.path             = args[++i]; break;
-      case '--output':            parsedArgs.outputFile       = args[++i]; break;
-      case '--ignore':            parsedArgs.ignoreFile       = args[++i]; break;
-      case '--include':           parsedArgs.includeFile      = args[++i]; break;
-      case '--ignore-pattern':    parsedArgs.ignorePatterns.push(args[++i]); break;
-      case '--include-pattern':   parsedArgs.includePatterns.push(args[++i]); break;
-      case '--max-size':          parsedArgs.maxSize          = parseInt(args[++i], 10); break;
-      case '--max-total-size':    parsedArgs.maxTotalSize     = parseInt(args[++i], 10); break;
-      case '--max-depth':         parsedArgs.maxDepth         = parseInt(args[++i], 10); break;
-      case '--quiet':             parsedArgs.quiet            = true; break;
-      case '--ultra-quiet':       parsedArgs.ultraQuiet       = true; break;
-      case '--skip-default-ignore': parsedArgs.skipDefaultIgnore = true; break;
-      case '--help':              printHelp(); process.exit(0); break;
-
-      // Short options
-      case '-p':  parsedArgs.path             = args[++i]; break;
-      case '-o':  parsedArgs.outputFile       = args[++i]; break;
-      case '-g':  parsedArgs.ignoreFile       = args[++i]; break;
-      case '-n':  parsedArgs.includeFile      = args[++i]; break;
-      case '-i':  parsedArgs.ignorePatterns.push(args[++i]); break;
-      case '-I':  parsedArgs.includePatterns.push(args[++i]); break;
-      case '-s':  parsedArgs.maxSize          = parseInt(args[++i], 10); break;
-      case '-t':  parsedArgs.maxTotalSize     = parseInt(args[++i], 10); break;
-      case '-d':  parsedArgs.maxDepth         = parseInt(args[++i], 10); break;
-      case '-q':  parsedArgs.quiet            = true; break;
-      case '-uq': parsedArgs.ultraQuiet       = true; break;
-      case '-k':  parsedArgs.skipDefaultIgnore = true; break;
-      case '-h':  printHelp(); process.exit(0); break;
-      default:
-        console.warn(`Unknown option: ${args[i]}`);
-        printHelp();
-        process.exit(1);
-    }
-  }
-
-  return parsedArgs;
-};
-
-/**
- * Prints the help message with usage examples.
- */
-const printHelp = () => {
+function printHelp() {
   console.log(`
 Usage: node codedigest.mjs [options]
 
 Options:
-  --path <path>, -p <path>                 Directory to process (default: current directory)
-  --output <file>, -o <file>               Output file path (default: digest.txt)
-  --ignore <file>, -g <file>               File containing ignore patterns
-  --include <file>, -n <file>              File containing include patterns
-  --ignore-pattern <pattern>, -i <pattern> Ignore pattern (can be used multiple times)
-  --include-pattern <pattern>, -I <pattern>Include pattern (can be used multiple times)
-  --max-size <bytes>, -s <bytes>           Maximum file size (default: ${formatBytes(MAX_FILE_SIZE)})
-  --max-total-size <bytes>, -t <bytes>     Maximum total size (default: ${formatBytes(MAX_TOTAL_SIZE_BYTES)})
-  --max-depth <number>, -d <number>        Maximum directory depth (default: ${MAX_DIRECTORY_DEPTH})
-  --quiet, -q                              Suppress 'Added' and 'Skipped' messages
-  --ultra-quiet, -uq                       Suppress all non-error output
-  --skip-default-ignore, -k                Skip default ignore patterns; use only user-provided patterns
-  --help, -h                               Display this help message
-
-Examples:
-  # Basic usage with default options
-  node codedigest.mjs
-
-  # Specify a directory and output file
-  node codedigest.mjs --path ./myproject --output mydigest.txt
-
-  # Use ignore patterns from a file and add additional ignore patterns via command line
-  node codedigest.mjs --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
-
-  # Use include patterns to only include specific file types
-  node codedigest.mjs --include '*.js' --include '*.md'
-
-  # Combine include and ignore patterns (Include first, then Exclude)
-  node codedigest.mjs -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
-
-  # Skip default ignore patterns and use only user-provided patterns
-  node codedigest.mjs --skip-default-ignore --ignore-pattern 'custom/**/*.js'
+  --path <path>, -p <path>                   Directory to process (default: current directory)
+  --output <file>, -o <file>                 Output file path (default: digest.txt)
+  --ignore <file>, -g <file>                 File containing ignore patterns (gitignore-style)
+  --include <file>, -n <file>                File containing include patterns (gitignore-style)
+  --ignore-pattern <pattern>, -i <pattern>   Additional ignore pattern (can be used multiple times)
+  --include-pattern <pattern>, -I <pattern>  Additional include pattern (can be used multiple times)
+  --max-size <bytes>, -s <bytes>             Maximum file size (default: ${formatBytes(MAX_FILE_SIZE)})
+  --max-total-size <bytes>, -t <bytes>       Maximum total size (default: ${formatBytes(MAX_TOTAL_SIZE_BYTES)})
+  --max-depth <number>, -d <number>          Maximum directory depth (default: ${MAX_DIRECTORY_DEPTH})
+  --quiet, -q                                Suppress 'Added' and 'Skipped' messages
+  --ultra-quiet, -uq                         Suppress all non-error output
+  --skip-default-ignore, -k                  Skip default ignore patterns; use only user-provided
+  --help, -h                                 Display this help message
 `);
-};
+}
 
-/**
- * Ensures that a directory exists, creating it if necessary.
- *
- * @param {string} dirPath - The path to the directory.
- */
-const ensureDirectoryExists = (dirPath) => {
+function validateArgs(args) {
+  const errors = [];
+  if (args.maxSize <= 0) {
+    errors.push('maxSize must be positive');
+  }
+  if (args.maxTotalSize <= 0) {
+    errors.push('maxTotalSize must be positive');
+  }
+  if (args.maxDepth <= 0) {
+    errors.push('maxDepth must be positive');
+  }
+  if (args.ignoreFile && !existsSync(args.ignoreFile)) {
+    errors.push(`Ignore file not found: ${args.ignoreFile}`);
+  }
+  if (args.includeFile && !existsSync(args.includeFile)) {
+    errors.push(`Include file not found: ${args.includeFile}`);
+  }
+  if (errors.length > 0) {
+    throw new Error(`Invalid arguments:\n${errors.join('\n')}`);
+  }
+}
+
+function parseArgs() {
+  const argv = process.argv.slice(2);
+  const parsed = {
+    path: '.', outputFile: 'digest.txt',
+    ignoreFile: null, includeFile: null,
+    ignorePatterns: [], includePatterns: [],
+    maxSize: MAX_FILE_SIZE, maxTotalSize: MAX_TOTAL_SIZE_BYTES,
+    maxDepth: MAX_DIRECTORY_DEPTH,
+    quiet: false, ultraQuiet: false,
+    skipDefaultIgnore: false,
+  };
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case '--path': case '-p':
+        parsed.path = argv[++i]; break;
+      case '--output': case '-o':
+        parsed.outputFile = argv[++i]; break;
+      case '--ignore': case '-g':
+        parsed.ignoreFile = argv[++i]; break;
+      case '--include': case '-n':
+        parsed.includeFile = argv[++i]; break;
+      case '--ignore-pattern': case '-i':
+        parsed.ignorePatterns.push(argv[++i]); break;
+      case '--include-pattern': case '-I':
+        parsed.includePatterns.push(argv[++i]); break;
+      case '--max-size': case '-s':
+        parsed.maxSize = parseInt(argv[++i], 10); break;
+      case '--max-total-size': case '-t':
+        parsed.maxTotalSize = parseInt(argv[++i], 10); break;
+      case '--max-depth': case '-d':
+        parsed.maxDepth = parseInt(argv[++i], 10); break;
+      case '--quiet': case '-q':
+        parsed.quiet = true; break;
+      case '--ultra-quiet': case '-uq':
+        parsed.ultraQuiet = true; break;
+      case '--skip-default-ignore': case '-k':
+        parsed.skipDefaultIgnore = true; break;
+      case '--help': case '-h':
+        printHelp(); process.exit(0);
+      default:
+        console.warn(`Unknown option: ${arg}`);
+        printHelp();
+        process.exit(1);
+    }
+  }
+  return parsed;
+}
+
+function loadPatternFile(filePath) {
+  try {
+    return readFileSync(filePath, 'utf-8');
+  } catch (err) {
+    console.error(`Error reading pattern file ${filePath}: ${err.message}`);
+    return '';
+  }
+}
+
+function ensureDirectoryExists(dirPath) {
   if (!existsSync(dirPath)) {
     mkdirSync(dirPath, { recursive: true });
   }
-};
+}
 
-/**
- * The main function of the script.
- */
-const main = async () => {
+////////////////////////////////////////////////////////////////////////////////
+// Main
+////////////////////////////////////////////////////////////////////////////////
+
+async function main() {
   try {
     const args = parseArgs();
     validateArgs(args);
 
-    // Build final ignore pattern list
-    const ignorePatterns = [
-      ...(args.skipDefaultIgnore ? [] : Array.from(DEFAULT_IGNORE_PATTERNS)),
-      ...(args.ignoreFile ? loadPatternsFromFile(args.ignoreFile) : []),
-      ...args.ignorePatterns,
-    ];
-
-    // Build final include pattern list
-    const includePatterns = [
-      ...(args.includeFile ? loadPatternsFromFile(args.includeFile) : []),
-      ...args.includePatterns,
-    ];
-
     const rootPath       = resolve(args.path);
     const outputFilePath = resolve(args.outputFile);
 
-    // Exclude the output file itself from the digest
-    if (outputFilePath.startsWith(rootPath)) {
-      const relativeOutputPath   = relative(rootPath, outputFilePath);
-      const normalizedOutputPath = relativeOutputPath.split(sep).join('/');
-      ignorePatterns.push(normalizedOutputPath);
-    }
-
-    if (!existsSync(args.path)) {
+    if (!existsSync(rootPath)) {
       throw new Error(`Path does not exist: ${args.path}`);
     }
-
-    const stat = lstatSync(args.path);
-    if (!stat.isDirectory()) {
+    if (!lstatSync(rootPath).isDirectory()) {
       throw new Error(`Path is not a directory: ${args.path}`);
     }
 
+    // 1) Build final ignoreRules
+    let ignoreText = '';
+    if (!args.skipDefaultIgnore) {
+      ignoreText += Array.from(DEFAULT_IGNORE_PATTERNS).join('\n') + '\n';
+    }
+    if (args.ignoreFile) {
+      ignoreText += loadPatternFile(args.ignoreFile) + '\n';
+    }
+    if (args.ignorePatterns.length > 0) {
+      ignoreText += args.ignorePatterns.join('\n') + '\n';
+    }
+    const ignoreRules = parseGitignore(ignoreText);
+
+    // 2) Build final includeRules
+    let includeText = '';
+    if (args.includeFile) {
+      includeText += loadPatternFile(args.includeFile) + '\n';
+    }
+    if (args.includePatterns.length > 0) {
+      includeText += args.includePatterns.join('\n') + '\n';
+    }
+    const includeRules = parseGitignore(includeText);
+
+    // Exclude the output file itself if inside the root
+    if (outputFilePath.startsWith(rootPath)) {
+      const rel = relative(rootPath, outputFilePath).split(sep).join('/');
+      ignoreRules.push({
+        segments: splitIntoSegments(rel),
+        negated: false,
+        directoryOnly: false,
+        anchored: false,
+      });
+    }
+
     const options = {
-      ignorePatterns,
-      includePatterns,
+      ignoreRules,
+      includeRules,
       maxFileSize:  args.maxSize,
       maxTotalSize: args.maxTotalSize,
       maxDepth:     args.maxDepth,
@@ -986,21 +966,20 @@ const main = async () => {
       ultraQuiet:   args.ultraQuiet,
     };
 
-    // Create stats, then process the directory
     const statsObj = createStats();
     const files    = processDirectory(args.path, options, statsObj);
 
-    // Build the digest of file contents
+    // Build file content digest
     const digestContent = files.map((file) => {
-      const separator = '='.repeat(48) + '\n';
-      return `${separator}File: ${file.path}\n${separator}${file.content}\n`;
+      const sepLine = '='.repeat(48) + '\n';
+      return `${sepLine}File: ${file.path}\n${sepLine}${file.content}\n`;
     }).join('');
 
-    // Build directory tree (always omitting filtered items)
+    // Build directory tree
     const directoryTree = generateDirectoryTree(
       args.path,
-      ignorePatterns,
-      includePatterns,
+      ignoreRules,
+      includeRules,
       args.maxDepth,
       0,
       '',
@@ -1011,28 +990,27 @@ const main = async () => {
 
     const summary = generateSummary(args.path, statsObj, options, args.outputFile);
 
-    ensureDirectoryExists(dirname(args.outputFile));
+    ensureDirectoryExists(dirname(outputFilePath));
     writeFileSync(
-      args.outputFile,
-      `Directory Structure\n==================\n${directoryTree}\n\nFile Contents\n=============\n${digestContent}\n\n${summary}`
+      outputFilePath,
+      `Directory Structure\n==================\n${directoryTree}\n\n` +
+      `File Contents\n=============\n${digestContent}\n\n${summary}`
     );
 
-    // Output the summary to the console (unless ultraQuiet)
     if (!args.ultraQuiet) {
       console.log(summary);
     }
 
     if (statsObj.errors.length > 0 && !args.ultraQuiet) {
       console.warn(
-        `\nWarning: ${statsObj.errors.length} errors occurred during processing. ` +
-        `Check the console for details.`
+        `\nWarning: ${statsObj.errors.length} errors occurred during processing. Check console for details.`
       );
     }
   } catch (error) {
     console.error(`Fatal error: ${error.message}`);
     process.exit(1);
   }
-};
+}
 
 main().catch((error) => {
   console.error('Unhandled error:', error);
