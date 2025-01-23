@@ -1,7 +1,8 @@
+
 <p align="center">
   <img src="https://raw.githubusercontent.com/Nowayz/CodeDigest/refs/heads/resources/codedigest_logo.png" alt="logo"/>
 </p>
-**CodeDigest** is a single-file Node.js command-line tool that consolidates an entire code repository (directory structure and text-based files) into a digest file for easy consumption by your preferred LLM (Large Language Model). It helps you quickly gather all source code in one place so you can feed it into LLM-based tools for analysis, code generation, or any other AI-driven development workflows.
+**CodeDigest** is a simple single-file Node.js command-line tool that consolidates an entire code repository (directory structure and text-based files) into a digest file for easy consumption by your preferred LLM (Large Language Model). It helps you quickly gather all source code in one place so you can feed it into LLM-based tools for analysis, code generation, or any other AI-driven development workflows.
 
 ## Table of Contents
 
@@ -73,20 +74,20 @@ node codedigest.mjs --help
 Usage: node codedigest.mjs [options]
 
 Options:
-  --path <path>, -p <path>                 Directory to process (default: current directory)
+  --path <path>, -p <path>             Directory to process (default: current directory)
   --output <file>, -o <file>           Output file path (default: digest.txt)
-  --ignore <file>, -g <file>           File containing ignore patterns
-  --include <file>, -n <file>          File containing include patterns
+  --ignore <file>, -g <file>           File containing ignore patterns (gitignore-style)
+  --include <file>, -n <file>          File containing include patterns (gitignore-style)
   --ignore-pattern <pattern>, -i <pattern>
-                                       Ignore pattern (can be used multiple times)
+                                       Additional ignore pattern (can be used multiple times)
   --include-pattern <pattern>, -I <pattern>
-                                       Include pattern (can be used multiple times)
-  --max-size <bytes>, -s <bytes>       Maximum file size (default: 10 MB)
-  --max-total-size <bytes>, -t <bytes> Maximum total size (default: 500 MB)
+                                       Additional include pattern (can be used multiple times)
+  --max-size <bytes>, -s <bytes>       Maximum file size (default: 10MB)
+  --max-total-size <bytes>, -t <bytes> Maximum total size (default: 500MB)
   --max-depth <number>, -d <number>    Maximum directory depth (default: 20)
   --quiet, -q                          Suppress 'Added' and 'Skipped' messages
   --ultra-quiet, -uq                   Suppress all non-error output
-  --skip-default-ignore, -k                Skip default ignore patterns; use only user-provided patterns
+  --skip-default-ignore, -k            Skip default ignore patterns; use only user-provided patterns
   --help, -h                           Display this help message
 
 Examples:
@@ -115,12 +116,12 @@ Examples:
 |-------------------------------|-------|------------------------------------------------------------|-------------------------|
 | `--path <path>`               | `-p`  | Directory to process.                                     | `.` (current directory) |
 | `--output <file>`             | `-o`  | Output file path.                                          | `digest.txt`           |
-| `--ignore <file>`             | `-g`  | File containing ignore patterns.                           | —                       |
-| `--include <file>`            | `-n`  | File containing include patterns.                          | —                      |
+| `--ignore <file>`             | `-g`  | File containing ignore patterns (gitignore-style).         | —                       |
+| `--include <file>`            | `-n`  | File containing include patterns (gitignore-style).        | —                      |
 | `--ignore-pattern <pattern>`  | `-i`  | Add an ignore pattern (can be used multiple times).        | —                       |
 | `--include-pattern <pattern>` | `-I`  | Add an include pattern (can be used multiple times).       | —                       |
-| `--max-size <bytes>`          | `-s`  | Maximum individual file size (in bytes).                   | `10 MB`                |
-| `--max-total-size <bytes>`    | `-t`  | Maximum total size (in bytes) before digest stops adding.  | `500 MB`               |
+| `--max-size <bytes>`          | `-s`  | Maximum individual file size (in bytes).                   | `10MB`                 |
+| `--max-total-size <bytes>`    | `-t`  | Maximum total size (in bytes) before digest stops adding.  | `500MB`                |
 | `--max-depth <number>`        | `-d`  | Maximum directory depth.                                   | `20`                   |
 | `--quiet`                     | `-q`  | Suppress "Added" and "Skipped" messages.                   | `false`                |
 | `--ultra-quiet`               | `-uq` | Suppress all non-error output.                             | `false`                |
@@ -321,20 +322,20 @@ This example first includes everything under the `src/` directory and then exclu
 ### How CodeDigest Works
 
 1. **Directory Traversal**
-   Recursively scans folders up to a user-defined depth, respecting symlinks (and avoiding loops).
+   Recursively scans folders up to a user-defined depth, respecting symlinks (and avoiding loops by tracking seen paths and symlinks).
 2. **Include Checking**
    If include patterns are provided, checks if the current path matches any of the include patterns. Only included paths proceed to the next step.
 3. **Ignore Checking**
    Checks if the path matches any ignore patterns. If it does, the path is skipped.
 4. **File Reading**
-   - Only reads **text-based** files (checked by extension and simple binary detection).
+   - Only reads **text-based** files (determined by file extension and null byte check).
    - Skips files larger than `--max-size`.
    - Stops adding new files once `--max-total-size` is reached (but still traverses the structure).
 5. **Directory Tree Generation**
    - Generates a **directory tree** in text form, omitting any files or directories that were excluded by either include or ignore patterns.
 6. **Single File Output**
    - Appends each included and not-ignored file's content to the digest.
-   - Summarizes stats (files processed, filtered, skipped, errors, etc.) at the end.
+   - Summarizes stats (files processed, filtered, skipped, errors, etc.) at the end, including a breakdown of file sizes by extension and a bar graph.
 
 ### Nuances & Limits
 
@@ -345,19 +346,20 @@ This example first includes everything under the `src/` directory and then exclu
   - Default `--max-depth=20`.
   - Prevents running forever on enormous or deeply nested repositories.
 - **Symlinks**
-  - Symlinks are tracked so CodeDigest doesn’t loop infinitely on recursive links.
-  - Broken symlinks generate warnings but do not stop the script.
+  - Symlinks are tracked to prevent infinite loops from recursive links. Circular symlinks are detected and skipped.
+  - Broken symlinks or symlinks with permission errors generate warnings but do not stop the script.
 - **File Type Detection**
   - A set of known text extensions is used (e.g., `.js`, `.py`, `.md`, etc.).
-  - Otherwise checks for null characters.
+  - For files without known text extensions, a check for null characters is performed to determine if it's likely a text file.
 - **Large Directories**
-  - For big projects, be mindful of memory and time. Possibly add more ignore patterns, include patterns for specific sections, or reduce `--max-depth`.
+  - For big projects, be mindful of memory and time. Consider adding more specific ignore patterns, using include patterns to target specific sections, or reducing `--max-depth`.
 - **Filtered Directory Tree**
   - The directory tree always reflects only the files that are included in the digest after applying both include and ignore patterns, providing a clean and focused view of the digested codebase.
+- **Output Summary and Stats:**
+  - The summary at the end of the digest file provides detailed statistics, including file counts, sizes, matched ignore and include patterns, file size distribution by extension (with a bar graph), and any errors encountered during processing.
 
 ### License
 
 This project is licensed under the [MIT License](LICENSE). You can use, modify, and distribute the code as long as the original license is included.
 
 **Enjoy CodeDigest!**
-If you have questions or ideas, open an issue or PR.
