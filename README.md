@@ -1,8 +1,7 @@
-
 <p align="center">
   <img src="https://raw.githubusercontent.com/Nowayz/CodeDigest/refs/heads/resources/codedigest_logo.png" alt="logo"/>
 </p>
-**CodeDigest** is a simple single-file Node.js command-line tool that consolidates an entire code repository (directory structure and text-based files) into a digest file for easy consumption by your preferred LLM (Large Language Model). It helps you quickly gather all source code in one place so you can feed it into LLM-based tools for analysis, code generation, or any other AI-driven development workflows.
+CodeDigest is single-file Node.js command-line tool that consolidates an entire code repository (directory structure and text-based files) into a digest file for easy consumption by your preferred LLM (Large Language Model). It helps you quickly gather all source code in one place so you can feed it into LLM-based tools for analysis, code generation, or any other AI-driven development workflows.
 
 ## Table of Contents
 
@@ -18,7 +17,7 @@
 ### Quick Start
 
 ```bash
-node ./codedigest.mjs --path ./myproject --output consolidated.txt
+npx codedigest --path ./myproject --output consolidated.txt
 ```
 
 Once run, **`consolidated.txt`** will include:
@@ -59,19 +58,19 @@ etc...
 This file can be fed directly to your LLM. For example, if you have an API or local setup where you can provide a text context to a language model, just drop the contents of `consolidated.txt` into the prompt or your specialized ingestion pipeline.
 
 ### Installation
-1. Download `codedigest.mjs` and place it somewhere in your `PATH`.
-2. Ensure you have [Node.js](https://nodejs.org) installed.
-3. Run the script:
+1. Ensure you have [Node.js](https://nodejs.org) and [npm](https://www.npmjs.com/) installed. npm is typically bundled with Node.js.
+2. Run the script using `npx`:
    ```bash
-   node codedigest.mjs
+   npx codedigest
    ```
+   `npx` will automatically download and run `codedigest` without needing a global installation.
 
 ### Usage
 ```bash
-node codedigest.mjs --help
+npx codedigest --help
 ```
 ```
-Usage: node codedigest.mjs [options]
+Usage: codedigest [options]
 
 Options:
   --path <path>, -p <path>             Directory to process (default: current directory)
@@ -92,22 +91,22 @@ Options:
 
 Examples:
   # Basic usage with default options
-  node codedigest.mjs
+  npx codedigest
 
   # Specify a directory and output file
-  node codedigest.mjs --path ./myproject --output mydigest.txt
+  npx codedigest --path ./myproject --output mydigest.txt
 
   # Use ignore patterns from a file and add additional ignore patterns via command line
-  node codedigest.mjs --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
+  npx codedigest --ignore .gitignore --ignore-pattern '*.log' --ignore-pattern 'temp/'
 
   # Use include patterns to only include specific file types
-  node codedigest.mjs --include '*.js' --include '*.md'
+  npx codedigest --include '*.js' --include '*.md'
 
   # Combine include and ignore patterns (Include first, then Exclude)
-  node codedigest.mjs -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
+  npx codedigest -p ./src -o digest.txt -g ignore.txt -i '*.test.js' -I '*.js'
 
   # Skip default ignore patterns and use only user-provided patterns
-  node codedigest.mjs --skip-default-ignore --ignore-pattern 'custom/**/*.js'
+  npx codedigest --skip-default-ignore --ignore-pattern 'custom/**/*.js'
 ```
 
 ### Options
@@ -290,12 +289,12 @@ vendor/
 - **Via Command Line:**
   - Add extra patterns using `--ignore-pattern` or `-i`. For example:
     ```bash
-    node codedigest.mjs --ignore-pattern '*.log' --ignore-pattern 'temp/'
+    npx codedigest --ignore-pattern '*.log' --ignore-pattern 'temp/'
     ```
 - **Via Ignore File:**
   - Create a file (e.g., `.gitignore`) with your custom ignore patterns and specify it using `--ignore <file>` or `-g <file>`. For example:
     ```bash
-    node codedigest.mjs --ignore .gitignore
+    npx codedigest --ignore .gitignore
     ```
 - **Skipping Default Ignores:**
     - To use only your custom ignore patterns and skip the default patterns, use the `--skip-default-ignore` or `-k` flag.
@@ -306,14 +305,14 @@ vendor/
 
 For example, to include only JavaScript and Markdown files:
 ```bash
-node codedigest.mjs --path ./myproject \
+npx codedigest --path ./myproject \
   --include-pattern '*.js' \
   --include-pattern '*.md'
 ```
 
 To include files from a specific source directory, and then exclude test files within it:
 ```bash
-node codedigest.mjs --path ./myproject \
+npx codedigest --path ./myproject \
   --include-pattern 'src/**' \
   --ignore-pattern 'src/**/*.test.js'
 ```
